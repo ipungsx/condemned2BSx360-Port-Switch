@@ -333,7 +333,10 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     switch (instr.dimension)
     {
     case TextureDimension::Texture1D:
-        dimension = "1D";
+        // A Xenos 1D texture is a row of texels (height 1), and the deko3d renderer binds every non-3D, non-cube
+        // sampler as a Texture2D. Condemned 2's light attenuation ramps (sDirectional_AttenuationSampler) are 1D:
+        // sample them as 2D at v = 0.5 (see the float2 wrapper below).
+        dimension = "2D";
         componentCount = 1;
         break;
     case TextureDimension::Texture2D:
@@ -354,12 +357,14 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
     // A vertex shader has no derivatives, so its 2D fetches sample mip 0 (tfetch2DVertice, written into the
     // shader at the end of recompile()).
-    if (!isPixelShader && instr.opcode == FetchOpcode::TextureFetch && instr.dimension == TextureDimension::Texture2D)
+    if (!isPixelShader && instr.opcode == FetchOpcode::TextureFetch &&
+        (instr.dimension == TextureDimension::Texture2D || instr.dimension == TextureDimension::Texture1D))
     {
         out += "Vertice";
         usaTfetchVertice = true;
     }
-    else if (instr.opcode == FetchOpcode::TextureFetch && instr.dimension == TextureDimension::Texture2D &&
+    else if (instr.opcode == FetchOpcode::TextureFetch &&
+             (instr.dimension == TextureDimension::Texture2D || instr.dimension == TextureDimension::Texture1D) &&
              instr.texCoordDenorm)
     {
         out += "Desnorm";
@@ -367,10 +372,22 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
 
     print("({0}_Texture{1}DescriptorIndex, {0}_SamplerDescriptorIndex, ", constNamePtr, dimension);
-    printSrcRegister(componentCount);
+    if (instr.dimension == TextureDimension::Texture1D)
+    {
+        out += "float2(";
+        printSrcRegister(componentCount);
+        out += ", 0.5)";
+    }
+    else
+    {
+        printSrcRegister(componentCount);
+    }
 
     switch (instr.dimension)
     {
+    case TextureDimension::Texture1D:
+        print(", float2({}, 0.0), {}_InvTamano", instr.offsetX * 0.5f, constNamePtr);
+        break;
     case TextureDimension::Texture2D:
         // The last argument is 1/size of the slot, so the texture does not have to be queried.
         print(", float2({}, {}), {}_InvTamano", instr.offsetX * 0.5f, instr.offsetY * 0.5f, constNamePtr);
@@ -1149,7 +1166,7 @@ void ShaderRecompiler::printDeko3dConstants(const ConstantTableContainer* consta
 
             if (constantInfo->registerCount > 1)
             {
-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
+                uint32_t tailCount = 256 - constantInfo->registerIndex;
                 println("#define {}(INDEX) select((INDEX) < {}, g_Ubo{}.v[{} + min(INDEX, {})], 0.0)",
                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
             }

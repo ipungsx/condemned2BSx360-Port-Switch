@@ -82,7 +82,7 @@
 // -fvk-use-dx-layout each float4 takes 16 contiguous bytes, so any 4-byte word of the shared block is
 // a component: v[B / 16][(B % 16) / 4], and asuint reads it without changing a bit.
 struct NfsmwBloqueVs { float4 v[256]; };
-struct NfsmwBloquePs { float4 v[224]; };
+struct NfsmwBloquePs { float4 v[256]; };  // all 256 Xenos PS constants (Condemned 2 reads c224 and up)
 // The 1/size pairs of the 16 sampler registers end at byte 360 + 16 * 8 = 488, past the 23 float4 below: NVK reads
 // beyond the declared array, Mesa's GLSL front end in uam rejects a constant index past it. 31 float4 = 496 bytes,
 // the size the deko3d renderer binds.

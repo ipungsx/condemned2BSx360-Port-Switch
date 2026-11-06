@@ -1,0 +1,26 @@
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index 8f25e6b..3920521 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -782,7 +782,7 @@ class RenderDk final : public DestinosNativos {
+   uint64_t bloques_trabajo_ = UINT64_MAX;
+   DkGpuAddr bloque_vs_ = 0, bloque_ps_ = 0, bloque_compartidas_ = 0;
+   std::array<uint32_t, 1024> sombra_vs_{};  // 256 registers
+-  std::array<uint32_t, 896> sombra_ps_{};   // 224 registers
++  std::array<uint32_t, 1024> sombra_ps_{};  // 256 registers
+   std::array<uint32_t, 128> sombra_compartidas_{};
+   uint64_t bloque_vs_generacion_ = UINT64_MAX, bloque_ps_generacion_ = UINT64_MAX;
+   uint32_t bloque_vs_cubierto_ = 0, bloque_ps_cubierto_ = 0;  // bytes compared at that generation
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index 3f46e66..b2fb1d7 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -126,7 +126,7 @@ constexpr uint32_t kVarianteResplandorSuave = 4;
+ constexpr uint32_t kPalabraInvTamano = 90;
+ constexpr uint32_t kMaxVerticesPorDibujo = uint32_t(1) << 20;
+ constexpr uint32_t kUboBytesVs = 256 * 16;
+-constexpr uint32_t kUboBytesPs = 224 * 16;
++constexpr uint32_t kUboBytesPs = 256 * 16;  // all 256 Xenos PS constants (Condemned 2 reads c224 and up)
+ constexpr uint32_t kUboBytesCompartidas = 31 * 16;
+ constexpr uint32_t kTodasLasSalidas = ~0u;
+ 
