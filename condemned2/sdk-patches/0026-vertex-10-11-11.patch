@@ -1,0 +1,31 @@
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index b2fb1d7..d5a7ec2 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -553,8 +553,15 @@ bool RenderDk::CalcularEntrada(const PeticionDibujo& p, EntradaVerticesDk& entra
+     DkVtxAttribSize tamano;
+     DkVtxAttribType tipo;
+     bool r11g11b10 = false;
+-    if (!AtributoDe(formato, EntradaEntera(elemento.uso), (d1 >> 12) & 0x1, (d1 >> 13) & 0x1, tamano, tipo,
+-                    r11g11b10)) {
++    // k_10_11_11 into a float input (Condemned 2's packed normals): the raw word goes to the shader as the bits of
++    // .x and remapInput decodes it (decode101111 in shaders/XenosRecomp/shader_common.h).
++    uint32_t remapeo_extra = 0;
++    if (formato == 16 && !EntradaEntera(elemento.uso)) {
++      tamano = DkVtxAttribSize_1x32;
++      tipo = DkVtxAttribType_Uint;
++      remapeo_extra = 0x1000 | (((d1 >> 12) & 0x1) ? 0x2000 : 0) | (((d1 >> 13) & 0x1) ? 0x4000 : 0);
++    } else if (!AtributoDe(formato, EntradaEntera(elemento.uso), (d1 >> 12) & 0x1, (d1 >> 13) & 0x1, tamano, tipo,
++                           r11g11b10)) {
+       return Rechazar(300 + formato, "formato de vertice todavia no soportado");
+     }
+     if (r11g11b10) {
+@@ -583,7 +590,7 @@ bool RenderDk::CalcularEntrada(const PeticionDibujo& p, EntradaVerticesDk& entra
+     a.size = tamano;
+     a.type = tipo;
+     entrada.n_atributos = std::max(entrada.n_atributos, uint32_t(ubicacion) + 1);
+-    entrada.remapeos[uint32_t(ubicacion)] = CodigoRemapeo(original, d1 & 0xFFF);
++    entrada.remapeos[uint32_t(ubicacion)] = CodigoRemapeo(original, d1 & 0xFFF) | remapeo_extra;
+     entrada.lista.push_back({uint32_t(ubicacion), enlace, uint32_t(offset)});
+     ubicaciones_usadas |= uint32_t(1) << ubicacion;
+   }

@@ -253,8 +253,30 @@ float4 tfetchTexcoord(uint swappedTexcoords, float4 value, uint semanticIndex)
 }
 
 // 3 bits per component: 0-3 = data component, 4 = 0, 5 = 1, 7 = unchanged.
+// Above the 12 swizzle bits: 0x1000 = the input is a raw k_10_11_11 word in the bits of .x (Condemned 2's packed
+// normals), 0x2000 = signed, 0x4000 = integer (not normalized). Components from the low bits: 11, 11, 10.
+float4 decode101111(uint w, uint code)
+{
+    uint4 v = uint4(w & 0x7FFu, (w >> 11) & 0x7FFu, w >> 22, 0u);
+    uint4 bits = uint4(11u, 11u, 10u, 1u);
+    float4 r;
+    if (code & 0x2000)
+    {
+        int4 s = int4(v << (32u - bits)) >> int4(32u - bits);
+        r = (code & 0x4000) ? float4(s) : max(float4(s) / float4((1u << (bits - 1u)) - 1u), -1.0);
+    }
+    else
+    {
+        r = (code & 0x4000) ? float4(v) : float4(v) / float4((1u << bits) - 1u);
+    }
+    return float4(r.xyz, 1.0);
+}
+
 float4 remapInput(float4 value, uint code)
 {
+    if (code & 0x1000)
+        value = decode101111(asuint(value.x), code);
+    code &= 0xFFF;
     if (code == 0xFFF)
         return value;
 

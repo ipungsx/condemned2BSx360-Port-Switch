@@ -1261,6 +1261,7 @@ float4 dsVfetch(uint k, float indiceReal, bool redondeado)
     uint4 bits;
     if (formato == 6)        { v = w.xxxx >> uint4(0, 8, 16, 24); bits = uint4(8, 8, 8, 8); n = 4; }
     else if (formato == 7)   { v = w.xxxx >> uint4(0, 10, 20, 30); bits = uint4(10, 10, 10, 2); n = 4; }
+    else if (formato == 16)  { v = w.xxxx >> uint4(0, 11, 22, 0); bits = uint4(11, 11, 10, 32); n = 3; }
     else if (formato == 25)  { v = w.xxxx >> uint4(0, 16, 0, 0); bits = uint4(16, 16, 16, 16); n = 2; }
     else if (formato == 26)  { v = w.xxyy >> uint4(0, 16, 0, 16); bits = uint4(16, 16, 16, 16); n = 4; }
     else                     { v = w; bits = uint4(32, 32, 32, 32); n = formato == 33 ? 1u : formato == 34 ? 2u : 4u; }
