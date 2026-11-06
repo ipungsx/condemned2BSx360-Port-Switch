@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Homebrew Menu icon from YOUR disc: the title image of default.xex (XDBF image 0x8000, 64x64), enlarged to 256x256
 with the game's name under it. Written to condemned2/assets/icon.jpg, which is never committed (.gitignore); configure
-with -DCCO_ICON_DEL_DISCO=ON (tools/build_linux.sh does when the file exists).
+with -DC2_ICON_DEL_DISCO=ON (tools/build_linux.sh does when the file exists).
 
     make_icon.py <image_82000000.bin> [out.jpg]
 

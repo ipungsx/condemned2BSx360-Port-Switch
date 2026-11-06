@@ -6,7 +6,7 @@
 # Configure (Switch; tools/build_linux.sh does all of this):
 #   cmake -S condemned2 -B condemned2/out/sw -G Ninja -DCMAKE_BUILD_TYPE=Release \
 #     -DCMAKE_TOOLCHAIN_FILE=tools/switch/cmake/switch-devkitA64.cmake \
-#     -DREXSDK_DIR=$PWD/sdk -DCCO_GEN_DIR=$PWD/condemned2/recomp/generated/default -DREXGLUE_SWITCH_DEKO3D=ON
+#     -DREXSDK_DIR=$PWD/sdk -DC2_GEN_DIR=$PWD/condemned2/recomp/generated/default -DREXGLUE_SWITCH_DEKO3D=ON
 #   cmake --build condemned2/out/sw
 
 cmake_minimum_required(VERSION 3.25)

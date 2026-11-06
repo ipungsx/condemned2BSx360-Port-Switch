@@ -54,7 +54,7 @@ if [ ! -f "$BUILD/build.ninja" ] || [ "${RECONFIGURE:-0}" = 1 ]; then
   echo "== configure"
   cmake -S condemned2 -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$ROOT/tools/switch/cmake/switch-devkitA64.cmake" \
-    -DREXSDK_DIR="$ROOT/sdk" -DCCO_GEN_DIR="$GEN" -DREXGLUE_SWITCH_DEKO3D=ON
+    -DREXSDK_DIR="$ROOT/sdk" -DC2_GEN_DIR="$GEN" -DREXGLUE_SWITCH_DEKO3D=ON
 fi
 
 echo "== build ($JOBS jobs)"
