@@ -1,0 +1,16 @@
+# ReXGlue v0.10.0 manifest for Condemned 2: Bloodshot (Xbox 360, retail default.xex).
+# tools/codegen.sh fills in the paths. Everything game specific lives in condemned2_functions.toml.
+
+[project]
+name = "condemned2"
+sdk_version = "0.10.0"
+game_root = "@GAME@"
+
+[entrypoint]
+file_path = "@XEX@"
+out_directory_path = "generated/default"
+includes = ["condemned2_functions.toml", "condemned2_leaf_functions.toml"]
+# The CRT setjmp/longjmp of Condemned 2 (found by shape: setjmp stores f14-f31 and r13-r31 into r3's buffer,
+# longjmp reloads them through r7 and turns a 0 value into 1). Replaced by the runtime's ppc_setjmp/ppc_longjmp.
+setjmp_address = 0x8281FC40
+longjmp_address = 0x8281F920

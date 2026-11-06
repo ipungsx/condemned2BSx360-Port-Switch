@@ -1,0 +1,7 @@
+# Condemned 2: Bloodshot specific function hints, found from the codegen passes on the retail default.xex
+# (sha256 554b2ae2...0310fd). Addresses are of THIS game; nothing here comes from Condemned 1.
+[functions]
+# Leaf string helper without .pdata: the analysis split it at an unreachable `b` (0x822CFA6C).
+0x822CFA40 = { size = 0xD0 }
+# Switch dispatcher (jump table at 0x8251B1BC, 16 cases); its case tails were taken as separate functions.
+0x8251B190 = { size = 0x1EC }
