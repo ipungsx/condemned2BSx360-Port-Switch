@@ -1,0 +1,26 @@
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index d5a7ec2..8181c5e 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -497,7 +497,21 @@ bool RenderDk::CalcularEntrada(const PeticionDibujo& p, EntradaVerticesDk& entra
+     const uint32_t registro = (vs.microcodigo[size_t(elemento.instruccion) * 3] >> 12) & 0x3F;
+     const uint32_t original = vs.microcodigo[size_t(elemento.instruccion) * 3 + 1] & 0xFFF;
+     size_t q = SIZE_MAX;
++    // First the element's own instruction: D3D patches each vfetch in place (same length checked above). Searching by
++    // destination register alone picks the wrong fetch when two write the same register with the same mask:
++    // Condemned 2's Bink quad fetches its position and then its color into r1 (both xyzw), and the color location
++    // got the position (x, y in pixels, z = 1), which turned every video and the video sky into saturated colors.
++    {
++      const size_t i = size_t(elemento.instruccion) * 3;
++      if (i + 2 < parcheado.size() && ((parcheado[i] >> 12) & 0x3F) == registro && (parcheado[i] & 0x1F) == 0 &&
++          MascaraEscrita(parcheado[i + 1] & 0xFFF) == MascaraEscrita(original)) {
++        q = i;
++      }
++    }
+     for (const ElementoVertice& otro : vs.elementos) {
++      if (q != SIZE_MAX) {
++        break;
++      }
+       const size_t i = size_t(otro.instruccion) * 3;
+       if (((parcheado[i] >> 12) & 0x3F) != registro || (parcheado[i] & 0x1F) != 0) {
+         continue;

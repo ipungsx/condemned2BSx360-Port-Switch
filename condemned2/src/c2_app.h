@@ -83,9 +83,6 @@ class C2App : public rex::ReXApp {
     c2::menu::CargarOpciones();  // the options menu's saved choices, over c2.toml (before the cvars are final)
     DefaultFlag("input_vibracion", "true");
     DefaultFlag("input_vibracion_fuerza", "0.5");
-    // Bink video planes (k_8, 256x256 chroma) start empty and change where the sampled fingerprint does not look:
-    // the chroma stayed 0 and every video came out yellow. Condemned 2 rechecks textures with the whole hash.
-    DefaultFlag("nfsmw_nativo_huellas_muestreo", "0");
 #if !C2_DEKO3D
     DefaultFlag("gpu_plugin", "xenos");
 #endif
