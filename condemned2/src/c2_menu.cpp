@@ -37,6 +37,11 @@ REXCVAR_DEFINE_BOOL(c2_fxaa, false, "C2", "FXAA in the output pass (options menu
 REXCVAR_DEFINE_BOOL(c2_grano_pelicula, true, "C2", "The film grain of the composite pass (options menu)");
 REXCVAR_DEFINE_BOOL(c2_profundidad_campo, true, "C2", "The depth of field blur (options menu)");
 REXCVAR_DEFINE_BOOL(c2_nitidez, true, "C2", "The game's sharpen pass (options menu)");
+REXCVAR_DEFINE_BOOL(c2_desenfoque_movimiento, true, "C2",
+                    "Motion blur (options menu). false = its velocity pass (the scene drawn a second time at 320x180) "
+                    "and the blur left out: higher frame rate");
+REXCVAR_DEFINE_BOOL(c2_sombras, true, "C2",
+                    "The stencil shadow volumes (options menu). false = no dynamic shadows: higher frame rate");
 REXCVAR_DEFINE_BOOL(c2_mosaico_unico, true, "C2",
                     "The scene in one pass instead of the Xbox 360's two EDRAM tiles (options menu): half the draws, "
                     "no seam between the halves. false = two tiles as on the console");
@@ -128,6 +133,13 @@ std::vector<Fila>& Filas() {
     f.push_back({"FILM GRAIN", "c2_grano_pelicula", {"OFF", "ON"}, {"false", "true"},
                  [] { return size_t(REXCVAR_GET(c2_grano_pelicula)); },
                  [](size_t i) { REXCVAR_SET(c2_grano_pelicula, i == 1); }, false});
+    // Whole passes left out, for frame rate (c2_gpu.cpp, OmitidoPorOpciones).
+    f.push_back({"MOTION BLUR", "c2_desenfoque_movimiento", {"OFF (FASTER)", "ON"}, {"false", "true"},
+                 [] { return size_t(REXCVAR_GET(c2_desenfoque_movimiento)); },
+                 [](size_t i) { REXCVAR_SET(c2_desenfoque_movimiento, i == 1); }, false});
+    f.push_back({"SHADOWS", "c2_sombras", {"OFF (FASTER)", "ON"}, {"false", "true"},
+                 [] { return size_t(REXCVAR_GET(c2_sombras)); },
+                 [](size_t i) { REXCVAR_SET(c2_sombras, i == 1); }, false});
     f.push_back({"DEPTH OF FIELD", "c2_profundidad_campo", {"OFF", "ON"}, {"false", "true"},
                  [] { return size_t(REXCVAR_GET(c2_profundidad_campo)); },
                  [](size_t i) { REXCVAR_SET(c2_profundidad_campo, i == 1); }, false});
@@ -293,11 +305,12 @@ void CargarOpciones() {
   if (!std::filesystem::exists(Fichero(), ec)) return;
   rex::cvar::LoadConfig(Fichero());
   REXLOG_INFO("c2: opciones de {} (CPU {} MHz, GPU portatil {} MHz, anisotropico {}, FXAA {}, grano {}, "
-              "profundidad de campo {}, nitidez {}, una pasada {}, brillo {}, gamma {})",
+              "profundidad de campo {}, nitidez {}, una pasada {}, desenfoque de movimiento {}, sombras {}, brillo {}, "
+              "gamma {})",
               Fichero().string(), REXCVAR_GET(c2_cpu_mhz), REXCVAR_GET(c2_gpu_portatil_mhz),
               REXCVAR_GET(nfsmw_nativo_anisotropico), REXCVAR_GET(c2_fxaa), REXCVAR_GET(c2_grano_pelicula),
               REXCVAR_GET(c2_profundidad_campo), REXCVAR_GET(c2_nitidez), REXCVAR_GET(c2_mosaico_unico),
-              REXCVAR_GET(c2_brillo),
+              REXCVAR_GET(c2_desenfoque_movimiento), REXCVAR_GET(c2_sombras), REXCVAR_GET(c2_brillo),
               REXCVAR_GET(c2_gamma));
 }
 

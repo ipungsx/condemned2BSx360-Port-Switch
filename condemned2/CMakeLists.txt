@@ -42,7 +42,7 @@ endif()
 target_include_directories(condemned2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
                            ${REXSDK_DIR}/thirdparty/xxHash)
 
-set(C2_VERSION "0.1.0")
+set(C2_VERSION "0.2.1")
 execute_process(COMMAND git rev-parse --short=10 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 OUTPUT_VARIABLE C2_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT C2_COMMIT)
@@ -65,7 +65,7 @@ if(REXGLUE_PLATFORM_SWITCH)
     message(STATUS "condemned2: icon ${C2_ICON}")
     rexglue_switch_add_nro(condemned2
         NAME "Condemned 2: Bloodshot"
-        AUTHOR "condemned2-nx"
+        AUTHOR "ipungsx"
         VERSION "${C2_VERSION}"
         ICON "${C2_ICON}")
 endif()

@@ -4,7 +4,16 @@ Every fix made while bringing Condemned 2: Bloodshot up on the Switch, newest fi
 the console, what caused it and where the fix lives. SDK fixes are patches in `condemned2/sdk-patches/`, applied in
 order on top of `rexglue-sdk-nx`.
 
-## 0.2.1 (testing)
+## 0.2.1
+
+Confirmed on the console: the half-screen seam, the dark boxes and the see-through walls are gone. The NRO shows
+version 0.2.1 and author ipungsx in the Homebrew Menu.
+
+### New options for frame rate
+- **MOTION BLUR** (`c2_desenfoque_movimiento`): off leaves out the velocity pass (the whole scene drawn a second time
+  at 320x180, about 270 draws a frame) and the blur after it; the velocity buffer is cleared to "no motion".
+- **SHADOWS** (`c2_sombras`): off leaves out the stencil shadow volumes; no dynamic shadows.
+- Both are on by default, so the default image is unchanged.
 
 ### Dark boxes and shadow streaks on walls, right half darker (root cause)
 - **Seen:** with the one-pass build the seam was gone, but dark see-through boxes with streaks showed on the walls;

@@ -86,6 +86,8 @@ REXCVAR_DECLARE(bool, c2_grano_pelicula);      // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_profundidad_campo);   // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_nitidez);             // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_mosaico_unico);       // c2_menu.cpp
+REXCVAR_DECLARE(bool, c2_desenfoque_movimiento);  // c2_menu.cpp
+REXCVAR_DECLARE(bool, c2_sombras);             // c2_menu.cpp
 REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/switch/switch_input_driver.cpp)
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
@@ -647,6 +649,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   mosaico_bins_segundo_);
       mosaico_dibujos_saltados_ = mosaico_copias_saltadas_ = mosaico_copias_ensanchadas_ = 0;
       mosaico_borrados_forzados_ = mosaico_forzados_omitidos_ = 0;
+    }
+    if (omitidos_por_opciones_) {
+      REXLOG_INFO("[gpu] options menu: {} draws left out (motion blur {}, shadows {})", omitidos_por_opciones_,
+                  REXCVAR_GET(c2_desenfoque_movimiento) ? "on" : "off", REXCVAR_GET(c2_sombras) ? "on" : "off");
+      omitidos_por_opciones_ = 0;
     }
 #if C2_DEKO3D
     const c2::shaders::Estadisticas s = c2::shaders::Global().estadisticas();
@@ -1358,6 +1365,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++sin_ps_;
       return;
     }
+    if (OmitidoPorOpciones(depth_only)) {
+      ++omitidos_por_opciones_;
+      if (draw_tracing_) DrawTraceLine(false, "left out by the options menu (motion blur or shadows off)");
+      return;
+    }
     if (ps_ && int(ps_->numero) == REXCVAR_GET(c2_sonda_ps)) SondaLuz();
     if ((skip_mode_ > 1 || REXCVAR_GET(c2_omitir_efectos) > 0) && SkippedByMode()) {
       ++skipped_by_mode_;
@@ -1449,6 +1461,58 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++msaa_draws_;
     }
   }
+
+  // ---- Options-menu settings that leave whole passes out (c2_menu.cpp), for frame rate.
+  //
+  // Motion blur (c2_desenfoque_movimiento): Condemned 2 draws the whole scene a second time into a 320x180 velocity
+  // buffer (its vertex shaders carry the previous frame's transform, k_mObjectToClip_Previous), ~270 draws and ~145k
+  // indices a frame, and the post-processing blurs along it with ten taps. Off: those draws are left out and the
+  // buffer stays "no motion" (EmulateClear), so the blur's branch is never taken either.
+  // Shadows (c2_sombras): the stencil shadow volumes, depth-only draws with two-sided stencil and the depth test on
+  // but no depth write. Off: left out, the stencil stays cleared and every light lights everything in its reach.
+  bool OmitidoPorOpciones(bool depth_only) {
+    namespace g = rex::graphics;
+    if (vs_ && EsPaseVelocidad(vs_)) {
+      destino_velocidad_ = (uint64_t(Register(g::XE_GPU_REG_RB_COLOR_INFO) & 0xFFF) << 32) |
+                           (Register(g::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF);
+      if (!REXCVAR_GET(c2_desenfoque_movimiento)) return true;
+    }
+    if (depth_only && !REXCVAR_GET(c2_sombras)) {
+      const uint32_t dc = Register(g::XE_GPU_REG_RB_DEPTHCONTROL);
+      const uint32_t primitiva = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR) & 0x3F;
+      if ((dc & 0x1) && (dc & 0x2) && !(dc & 0x4) && (dc & 0x80) && primitiva != 8) return true;
+    }
+    return false;
+  }
+  bool EsPaseVelocidad(const rex::x360::EntradaShader* vs) {
+    const auto it = pase_velocidad_.find(vs);
+    if (it != pase_velocidad_.end()) return it->second;
+    bool es = false;
+    if (const auto* juego = static_cast<const ds::Shader*>(vs->juego)) {
+      const std::vector<uint8_t>& c = juego->normalizado.empty() ? juego->original : juego->normalizado;
+      if (c.size() >= 36) {
+        const uint32_t tabla = Be32(c.data() + 16) + 4;
+        if (uint64_t(tabla) + 24 <= c.size()) {
+          const uint32_t n = Be32(c.data() + tabla + 12), info = Be32(c.data() + tabla + 16);
+          for (uint32_t i = 0; i < n && i < 512 && !es; ++i) {
+            const uint64_t o = uint64_t(tabla) + info + uint64_t(i) * 20;
+            if (o + 20 > c.size()) break;
+            const uint64_t nombre = uint64_t(tabla) + Be32(c.data() + o);
+            if (nombre >= c.size()) continue;
+            const char* texto = reinterpret_cast<const char*>(c.data() + nombre);
+            const std::string_view sv(texto, strnlen(texto, c.size() - size_t(nombre)));
+            es = sv == "k_mObjectToClip_Previous" || sv == "k_mModelObjectNodes_Previous";
+          }
+        }
+      }
+      if (es) REXLOG_INFO("[gpu] velocity pass VS {:016X} (motion blur)", juego->huella);
+    }
+    pase_velocidad_.emplace(vs, es);
+    return es;
+  }
+  std::unordered_map<const void*, bool> pase_velocidad_;
+  uint64_t destino_velocidad_ = 0;  // c0 base << 32 | pitch of the velocity buffer's target
+  uint64_t omitidos_por_opciones_ = 0;
 
   // ---- Predicated tiling as one pass (c2_mosaico_unico).
   //
@@ -1819,6 +1883,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         std::memcpy(&v, &registers_[0x4400 + j], 4);
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
       }
+    }
+    // Motion blur off (OmitidoPorOpciones): the velocity buffer is left as cleared, so it is cleared to "no motion"
+    // (0.5 in every channel, the motion blur's zero) instead of black (full speed down and left).
+    if (!REXCVAR_GET(c2_desenfoque_movimiento) && destino_velocidad_ && (depth_control & 0xFFFF) == 0x8777 &&
+        destino_velocidad_ == ((uint64_t(c0_base) << 32) | (r[g::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF))) {
+      color = 0x80808080u;
     }
     if (c0_written) {
       rex::x360::RegistrosCopia c = base;

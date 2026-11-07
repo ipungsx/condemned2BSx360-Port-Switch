@@ -20,7 +20,7 @@ own `default.xex`.
 > You need your own copy of the game (the retail Xbox 360 disc). This repository contains no game data and no
 > game code: the recompiled C++ is generated on your computer from your `default.xex`.
 
-**Status: 0.2.0.** Runs on the console: menus, Bink videos, the 3D world and the video sky render correctly. This
+**Status: 0.2.1.** Runs on the console: menus, Bink videos, the 3D world and the video sky render correctly. This
 release fixes the last known rendering bug (the right half of the screen darker in gameplay), raises the CPU and
 handheld GPU clocks and adds a graphics options menu made for Condemned 2. Installation guide (in Indonesian):
 [INSTALL.md](INSTALL.md). Every fix so far: [CHANGELOG.md](CHANGELOG.md).
@@ -29,6 +29,7 @@ handheld GPU clocks and adds a graphics options menu made for Condemned 2. Insta
 
 | Version | Problem on the console | Fix |
 |---|---|---|
+| 0.2.1 | Few ways to trade image for frame rate | Motion blur and shadows options |
 | 0.2.1 | Dark boxes and streaks on walls, right half darker and see-through; GPU stuck at 307.2 MHz | Light stencil clears of several rectangles kept stencil-only; scene rendered in one pass; GPU clock read back, 460.8 MHz fallback |
 | 0.2.0 | Right half of the screen darker in gameplay | Right tile's depth resolved into the left tile's texture (`sdk-patches/0028`) |
 | 0.2.0 | 25 to 40 fps, GPU busy ~95 % of each frame | CPU 1785 MHz, handheld GPU up to 768 MHz via sys-clk / Horizon OC (`sdk-patches/0029`) |
@@ -50,6 +51,8 @@ next to the NRO, B closes.
 | Texture filtering | trilinear to 16x anisotropic; next start |
 | Anti-aliasing | off, FXAA |
 | Scene rendering | one pass (default) or two tiles as on the Xbox 360 |
+| Motion blur | on, or off for frame rate (its velocity pass and blur left out) |
+| Shadows | on, or off for frame rate (no stencil shadow volumes) |
 | Film grain, depth of field, sharpen | the game's own passes, on or off |
 | Brightness, gamma | output pass |
 | Vibration, FPS counter | |

@@ -114,6 +114,8 @@ Tekan **ZL + ZR + Minus** saat bermain. Atas/Bawah memilih baris, Kiri/Kanan men
 | SCENE RENDERING | ONE PASS (bawaan): adegan dirender sekali penuh. TWO TILES: dua tile seperti di Xbox 360. |
 | TEXTURE FILTERING | Trilinear sampai 16x anisotropik. |
 | ANTI-ALIASING | Mati atau FXAA. |
+| MOTION BLUR | ON, atau OFF (FASTER): pass kecepatan dan blur gerak dilewati, FPS naik. |
+| SHADOWS | ON, atau OFF (FASTER): bayangan dinamis dimatikan, FPS naik. |
 | FILM GRAIN | Butiran film dari pass komposit game. |
 | DEPTH OF FIELD | Blur kedalaman bidang dari game. |
 | SHARPEN | Pass penajaman dari game. |
