@@ -130,6 +130,8 @@ diubah dari overlay atau konsol dinyalakan ulang.
 
 ## Status dan batasan
 
+Riwayat lengkap semua perbaikan ada di [CHANGELOG.md](CHANGELOG.md).
+
 Dunia 3D, video Bink, dan langit sudah tampil benar di konsol. Bug terakhir yang diketahui (separuh kanan layar lebih
 gelap saat bermain) berasal dari resolve depth tile kanan pada predicated tiling dan diperbaiki oleh
 `sdk-patches/0028`. Laporkan bila masih ada efek yang salah tampil, sertakan log serta hasil ZL+ZR+Kiri (dump frame) dan

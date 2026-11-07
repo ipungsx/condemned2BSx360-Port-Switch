@@ -15,9 +15,42 @@ own `default.xex`.
 > You need your own copy of the game (the retail Xbox 360 disc). This repository contains no game data and no
 > game code: the recompiled C++ is generated on your computer from your `default.xex`.
 
-**Status: 0.1.0, bring-up, not yet tested on hardware.** The recompile is clean (no unresolved branches) and the
-shader hooks are verified against the machine code. The renderer still comes from the Condemned 1 port, so some
-effects may need fixes once logs from the console come in. Installation guide (in Indonesian): [INSTALL.md](INSTALL.md).
+**Status: 0.2.0.** Runs on the console: menus, Bink videos, the 3D world and the video sky render correctly. This
+release fixes the last known rendering bug (the right half of the screen darker in gameplay), raises the CPU and
+handheld GPU clocks and adds a graphics options menu made for Condemned 2. Installation guide (in Indonesian):
+[INSTALL.md](INSTALL.md). Every fix so far: [CHANGELOG.md](CHANGELOG.md).
+
+## Fix history
+
+| Version | Problem on the console | Fix |
+|---|---|---|
+| 0.2.0 | Right half of the screen darker in gameplay | Right tile's depth resolved into the left tile's texture (`sdk-patches/0028`) |
+| 0.2.0 | 25 to 40 fps, GPU busy ~95 % of each frame | CPU 1785 MHz, handheld GPU up to 768 MHz via sys-clk / Horizon OC (`sdk-patches/0029`) |
+| 0.2.0 | Film grain option did nothing, no C2 effects in the menu | Effect constants found per shader by name: film grain, depth of field, sharpen |
+| 0.1.3 | Videos yellow and red, video sky green and cyan | Vertex fetch matched to its own instruction (`sdk-patches/0027`) |
+| 0.1.2 | 3D world not drawn | `k_10_11_11` packed normals decoded in the shader (`sdk-patches/0026`) |
+| 0.1.1 | Shader library would not build | 1D textures as 2D, all 256 PS constants (`sdk-patches/0025`); build script fix |
+| 0.1.0 | Earlier NRO: black screen, sound only | Clean port from C2's `default.xex`: recompile config, C2 shader hooks, shader dump and library |
+
+## Options menu
+
+Press **ZL + ZR + Minus** in game. Up / Down choose a row, Left / Right change it, A saves to `c2_opciones.toml`
+next to the NRO, B closes.
+
+| Row | Values |
+|---|---|
+| CPU | stock, 1224, 1428, 1581, 1785 MHz (default 1785), applied at once |
+| GPU (handheld) | 307, 384, 460 MHz (Horizon profiles); 614, 768 MHz with sys-clk / Horizon OC (default 768, else 460); next start |
+| Texture filtering | trilinear to 16x anisotropic; next start |
+| Anti-aliasing | off, FXAA |
+| Film grain, depth of field, sharpen | the game's own passes, on or off |
+| Brightness, gamma | output pass |
+| Vibration, FPS counter | |
+
+The game is GPU-bound in handheld, so the GPU row is the one that moves the frame rate without touching the image.
+Higher clocks use more battery and run warmer. With sys-clk / Horizon OC the clocks are requested through its
+override and released when the game exits normally; after a forced close they stay until changed in its overlay or
+the console restarts.
 
 ## Condemned 2 specifics
 
