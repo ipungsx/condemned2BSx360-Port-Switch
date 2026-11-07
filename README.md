@@ -4,8 +4,8 @@ Buy me a coffee, and support my next project,
 Thanks
 https://saweria.co/ipungsx
 
-<img width="1280" height="720" alt="2026110710082100" src="https://github.com/user-attachments/assets/e3af2752-c414-478c-9e37-7be3f01568f5" />
-<img width="1280" height="720" alt="2026110710080500" src="https://github.com/user-attachments/assets/b8d33e5c-1f37-46df-af89-4dee5aa38af0" />
+<img width="800" height="480" alt="2026110710082100" src="https://github.com/user-attachments/assets/e3af2752-c414-478c-9e37-7be3f01568f5" />
+<img width="800" height="480" alt="2026110710080500" src="https://github.com/user-attachments/assets/b8d33e5c-1f37-46df-af89-4dee5aa38af0" />
 
 Condemned 2: Bloodshot (Xbox 360) on the Nintendo Switch as a homebrew NRO. It's not an emulator: the game's
 PowerPC code is statically recompiled to C++ with [ReXGlue](https://github.com/rexglue/rexglue-sdk) v0.10.0 and
