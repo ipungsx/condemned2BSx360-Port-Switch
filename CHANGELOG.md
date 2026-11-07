@@ -4,6 +4,17 @@ Every fix made while bringing Condemned 2: Bloodshot up on the Switch, newest fi
 the console, what caused it and where the fix lives. SDK fixes are patches in `condemned2/sdk-patches/`, applied in
 order on top of `rexglue-sdk-nx`.
 
+## 0.2.2 (testing)
+
+### Resolution option
+- **RESOLUTION** (`c2_resolucion`): 720P (default), 630P or 540P. Below 720 the 3D scene and its post-processing
+  are drawn at 1120x630 or 960x540 into the corner of their target, and every resolve from it is stretched back to
+  1280x720 (bilinear for color, nearest for depth), so all of the game's textures keep their sizes. The HUD is part
+  of the scene and gets softer too; the options menu is drawn at full resolution.
+- Needs SCENE RENDERING = ONE PASS (choosing 630P or 540P turns it on).
+- `sdk-patches/0030-internal-render-scale.patch`: `FijarEscalaRender` in the renderer, scaled pass framing, scaled
+  color and depth copies on the 3D engine, scaled partial clears.
+
 ## 0.2.1
 
 Confirmed on the console: the half-screen seam, the dark boxes and the see-through walls are gone. The NRO shows

@@ -1,0 +1,301 @@
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index 71ce7dc..8f67233 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -157,6 +157,7 @@ class RenderDk final : public DestinosNativos {
+   bool Copiar(const RegistrosCopia& registros) override;
+   bool Presentar(rex::ui::Presenter* presentador, const TexturaSwap& swap, uint32_t ancho, uint32_t alto) override;
+   void RampaGamma(const std::array<std::array<uint16_t, 3>, 256>& rampa) override;
++  void FijarEscalaRender(uint32_t pitch, float escala) override;
+   void EmpezarOclusion(uint32_t base) override;
+   bool TerminarOclusion(uint32_t base, uint64_t& muestras) override {
+     (void)base;
+@@ -227,8 +228,21 @@ class RenderDk final : public DestinosNativos {
+   // modos_signo (4 ints, per destination channel): 0 copy, 1 signed 8-bit, 2 biased (2x - 1); nullptr: plain copy.
+   // bytes_profundidad: a depth source written to a color destination as the guest's 32-bit depth word in bytes
+   // (BytesProfundidad).
++  // escala_origen: the source is a target drawn at that scale (FijarEscalaRender); depth takes the nearest texel,
++  // color is filtered bilinearly.
+   bool Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto, ImagenDk& destino,
+-                uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool bytes_profundidad = false);
++                uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool bytes_profundidad = false,
++                float escala_origen = 1.0f);
++  DkShader fs_copia_profundidad_escalada_{}, fs_copia_color_escalada_{};
++  bool fs_copia_profundidad_escalada_valido_ = false, fs_copia_color_escalada_valido_ = false;
++  // FijarEscalaRender: the pitch whose targets are drawn scaled, and the scale.
++  uint32_t escala_render_pitch_ = 0;
++  float escala_render_ = 1.0f;
++  float EscalaDePitch(uint32_t pitch) const {
++    return escala_render_pitch_ && pitch == escala_render_pitch_ ? escala_render_ : 1.0f;
++  }
++  uint64_t copias_escaladas_ = 0;
++  bool aviso_profundidad_escalada_ = false;
+   bool rop_sin_barrera_ = true;
+   bool copia3d_pendiente_ = false;
+   uint64_t copias_3d_ = 0, barreras_fragmentos_ = 0;
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index 3bccacc..52e4916 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -91,6 +91,14 @@ class DestinosNativos {
+   // apply it the way the Xbox 360 display does. Called from the same thread as Presentar.
+   virtual void RampaGamma(const std::array<std::array<uint16_t, 3>, 256>& rampa) = 0;
+ 
++  // Internal resolution (condemned2-nx): the targets of that EDRAM pitch are drawn at escala of their size (viewport
++  // and scissor scaled, into the top left corner) and every resolve from them is stretched back to the size the game
++  // asked for, so the game's textures keep their sizes. pitch 0 or escala 1: off. Takes effect at the next pass.
++  virtual void FijarEscalaRender(uint32_t pitch, float escala) {
++    (void)pitch;
++    (void)escala;
++  }
++
+   // The game's occlusion queries (ConsultaOclusion in nfsmw_nativo_sistema.cpp). Empezar: whatever is drawn
+   // until Terminar counts for the base structure. Terminar: returns the last complete count measured for
+   // that structure, in host samples and from an earlier frame, or false if there is none yet.
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index bbeb454..093d876 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -308,6 +308,33 @@ void main() {
+ }
+ )";
+ 
++// The color copy from a target drawn at a lower internal resolution (FijarEscalaRender): bilinear (sampler 0), at
++// escala.xy times the pixel position plus escala.zw in source texels.
++constexpr const char* kFsCopiaColorEscalada = R"(#version 460
++layout(binding = 0) uniform sampler2D origen;
++layout(std140, binding = 0) uniform Copia {
++  ivec4 desplazamiento;
++  vec4 escala;
++} copia;
++layout(location = 0) out vec4 color;
++void main() {
++  vec2 p = gl_FragCoord.xy * copia.escala.xy + copia.escala.zw;
++  color = textureLod(origen, p / vec2(textureSize(origen, 0)), 0.0);
++}
++)";
++// The depth copy from a target drawn at a lower internal resolution (FijarEscalaRender): each destination pixel takes
++// the nearest source texel at escala.xy times its position plus escala.zw (depth is not filtered).
++constexpr const char* kFsCopiaProfundidadEscalada = R"(#version 460
++layout(binding = 0) uniform sampler2D origen;
++layout(std140, binding = 0) uniform Copia {
++  ivec4 desplazamiento;
++  vec4 escala;
++} copia;
++void main() {
++  gl_FragDepth = texelFetch(origen, ivec2(floor(gl_FragCoord.xy * copia.escala.xy + copia.escala.zw)), 0).r;
++}
++)";
++
+ // A depth target as the guest's 32-bit depth word in bytes (RenderDk::BytesProfundidad): the stencil in R, the 24-bit
+ // depth's bytes from the lowest in G, B, A.
+ constexpr const char* kFsBytesProfundidad = R"(#version 460
+@@ -622,8 +649,13 @@ void RenderDk::AntesDe3D() {
+ 
+ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto,
+                         ImagenDk& destino, uint32_t dx, uint32_t dy, const int32_t* modos_signo,
+-                        bool bytes_profundidad) {
++                        bool bytes_profundidad, float escala_origen) {
+   const bool z = destino.profundidad;
++  const bool escalada = escala_origen != 1.0f;
++  if (escalada && (modos_signo || bytes_profundidad ||
++                   !(z ? fs_copia_profundidad_escalada_valido_ : fs_copia_color_escalada_valido_))) {
++    return false;  // the caller blits it (color) or copies it unscaled (depth)
++  }
+   if (!vs_salida_valido_ || !(z ? fs_copia_profundidad_valido_ : fs_copia_color_valido_) ||
+       (modos_signo && (z || !fs_copia_signo_valido_)) ||
+       (bytes_profundidad && (z || !origen.profundidad || !fs_bytes_profundidad_valido_))) {
+@@ -640,6 +672,13 @@ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32
+   if (modos_signo) {
+     std::memcpy(ubo.cpu + sizeof(desplazamiento), modos_signo, 4 * sizeof(int32_t));
+   }
++  if (escalada) {
++    // The destination pixel at (dx, dy) + i is the guest's (x0, y0) + i, which the scaled target holds at that times
++    // the scale.
++    const float escala[4] = {escala_origen, escala_origen, (float(x0) - float(dx)) * escala_origen,
++                             (float(y0) - float(dy)) * escala_origen};
++    std::memcpy(ubo.cpu + sizeof(desplazamiento), escala, sizeof(escala));
++  }
+   const uint32_t ranura = VistaDe(origen, 0x688, z || bytes_profundidad ? 0 /* RRRR */ : 0x688);
+   const uint32_t ranura_estencil = bytes_profundidad ? VistaDe(origen, 0x688, 0, DkImageFormat_None, true) : 0;
+   if (bytes_profundidad && !ranura_estencil) {
+@@ -698,7 +737,9 @@ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32
+   dkCmdBufBindDepthStencilState(cmd, &ds);
+   dkCmdBufBindVtxAttribState(cmd, nullptr, 0);
+   dkCmdBufBindVtxBufferState(cmd, nullptr, 0);
+-  const DkShader* shaders[2] = {&vs_salida_, z                   ? &fs_copia_profundidad_
++  const DkShader* shaders[2] = {&vs_salida_, escalada && z       ? &fs_copia_profundidad_escalada_
++                                             : escalada            ? &fs_copia_color_escalada_
++                                             : z                   ? &fs_copia_profundidad_
+                                              : bytes_profundidad ? &fs_bytes_profundidad_
+                                              : modos_signo       ? &fs_copia_signo_
+                                                                  : &fs_copia_color_};
+@@ -1272,11 +1313,16 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+       // a linear blit, as the Vulkan path does; otherwise it is copied texel for texel.
+       const bool encoger = cabe_ancho && cabe_alto &&
+                            (pedido_ancho * 4 >= cabe_ancho * 5 || pedido_alto * 4 >= cabe_alto * 5);
++      // A target drawn at a lower internal resolution (FijarEscalaRender): its rectangle, scaled, stretched back to
++      // the size asked for with a linear blit.
++      const float escala_origen = encoger ? 1.0f : EscalaDePitch(pitch);
++      const bool escalada = escala_origen != 1.0f;
+       // nfsmw_nativo_frontal_perezoso: the whole scene to the front buffer of the last Swap, not read back.
+       const int32_t maximo_lectura = REXCVAR_GET(nfsmw_nativo_leer_resueltas_texels);
+       const bool se_lee = maximo_lectura > 0 && uint64_t(ancho) * alto <= uint64_t(maximo_lectura);
+       const bool frontal_perezoso = REXCVAR_GET(nfsmw_nativo_frontal_perezoso);  // read each time: the game can switch it (ds2 safe mode)
+       const bool frontal = frontal_perezoso && !frontal_apagado_ && base_resuelta == ultimo_frontal_ && !encoger &&
++                           !escalada &&
+                            !se_lee && x0 == 0 && y0 == 0 && dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho &&
+                            alto == resuelta->imagen.alto;
+       // What the resolve reads must be there: the useful area grows to it, a pending clear is done, the band too.
+@@ -1302,11 +1348,25 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+         const DkImageView destino_vista = VistaCompleta(resuelta->imagen.imagen);
+         // On the 3D engine, except the shrink (a linear blit) and the small resolves the game reads back (their
+         // read-back is a copy engine transfer: both go there, one after the other, with no barrier between).
+-        if (encoger || se_lee ||
+-            !Copiar3D(*destino_render, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx, dy)) {
++        const bool en_3d = !encoger && !se_lee &&
++                           Copiar3D(*destino_render, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx,
++                                    dy, nullptr, false, escala_origen);
++        if (en_3d && escalada) ++copias_escaladas_;
++        if (!en_3d) {
+           MarcarGpu(kGpuCopias);
+           AntesDeTransferir();
+-          if (encoger) {
++          if (escalada) {
++            const uint32_t sx0 = uint32_t(std::floor(float(x0) * escala_origen));
++            const uint32_t sy0 = uint32_t(std::floor(float(y0) * escala_origen));
++            const uint32_t sx1 = std::min(destino_render->ancho,
++                                          uint32_t(std::ceil(float(uint32_t(x0) + ancho) * escala_origen)));
++            const uint32_t sy1 = std::min(destino_render->alto,
++                                          uint32_t(std::ceil(float(uint32_t(y0) + alto) * escala_origen)));
++            const DkImageRect a = {sx0, sy0, 0, sx1 > sx0 ? sx1 - sx0 : 1, sy1 > sy0 ? sy1 - sy0 : 1, 1};
++            const DkImageRect b = {dx, dy, 0, ancho, alto, 1};
++            dkCmdBufBlitImage(cmd, &origen_vista, &a, &destino_vista, &b, DkBlitFlag_FilterLinear, 0);
++            ++copias_escaladas_;
++          } else if (encoger) {
+             const DkImageRect a = {uint32_t(x0), uint32_t(y0), 0, pedido_ancho, pedido_alto, 1};
+             const DkImageRect b = {dx, dy, 0, cabe_ancho, cabe_alto, 1};
+             dkCmdBufBlitImage(cmd, &origen_vista, &a, &destino_vista, &b, DkBlitFlag_FilterLinear, 0);
+@@ -1350,7 +1410,12 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+     for (uint32_t j = 0; j < 4; ++j) {
+       color[j] = float((valor >> (j * 8)) & 0xFF) * (1.0f / 255.0f);
+     }
+-    BorrarRectangulo(*destino_render, x0, y0, x1, y1, color, 0.0f, 0);
++    if (const float e = EscalaDePitch(pitch); e != 1.0f) {  // drawn scaled: its rectangle there
++      BorrarRectangulo(*destino_render, int32_t(std::floor(float(x0) * e)), int32_t(std::floor(float(y0) * e)),
++                       int32_t(std::ceil(float(x1) * e)), int32_t(std::ceil(float(y1) * e)), color, 0.0f, 0);
++    } else {
++      BorrarRectangulo(*destino_render, x0, y0, x1, y1, color, 0.0f, 0);
++    }
+     ++borrados_;
+     borrar_color = false;
+   }
+@@ -1393,6 +1458,12 @@ void RenderDk::BorrarProfundidad(const RegistrosCopia& reg, uint32_t pitch) {
+   if (int32_t x0, y0, x1, y1; Rectangulo(reg, pitch, x0, y0, x1, y1) &&
+                               (solo_estencil || RectanguloParcial(*profundidad, x0, y0, x1, y1))) {
+     // Only the copy's rectangle, as for color (Copiar); a stencil-only clear that way too, whatever its size.
++    if (const float e = EscalaDePitch(pitch); e != 1.0f) {
++      x0 = int32_t(std::floor(float(x0) * e));
++      y0 = int32_t(std::floor(float(y0) * e));
++      x1 = int32_t(std::ceil(float(x1) * e));
++      y1 = int32_t(std::ceil(float(y1) * e));
++    }
+     BorrarRectangulo(*profundidad, x0, y0, x1, y1, nullptr, float(reg.rb_depth_clear >> 8) / 16777215.0f,
+                      uint8_t(reg.rb_depth_clear & 0xFF), solo_estencil);
+     ++borrados_profundidad_;
+@@ -1689,7 +1760,8 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+     HacerBytesProfundidad(*profundidad, base, resuelta->imagen, x0, y0, ancho, alto, dx, dy);
+   }
+   const bool sin_copia = REXCVAR_GET(nfsmw_nativo_resolver_sin_copia);  // read each time: the game can switch it (ds2 safe mode)
+-  const bool entero = x0 == 0 && y0 == 0 && dx == 0 && dy == 0 && ancho == profundidad->ancho &&
++  const float escala_origen = EscalaDePitch(pitch);  // drawn at a lower internal resolution (FijarEscalaRender)
++  const bool entero = escala_origen == 1.0f && x0 == 0 && y0 == 0 && dx == 0 && dy == 0 && ancho == profundidad->ancho &&
+                       alto == profundidad->alto && resuelta->imagen.ancho == profundidad->ancho &&
+                       resuelta->imagen.alto == profundidad->alto && resuelta->imagen.formato == profundidad->formato;
+   if (sin_copia && entero && (borrara || REXCVAR_GET(nfsmw_nativo_intercambiar_sin_borrado))) {
+@@ -1705,7 +1777,15 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+   }
+   SombraMinimoCopiaDesde(*profundidad);
+   // On the 3D engine (gl_FragDepth): compressed depth must not go through the copy engine.
+-  if (!Copiar3D(*profundidad, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx, dy)) {
++  if (escala_origen != 1.0f) {
++    if (Copiar3D(*profundidad, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx, dy, nullptr, false,
++                 escala_origen)) {
++      ++copias_escaladas_;
++    } else if (!aviso_profundidad_escalada_) {
++      aviso_profundidad_escalada_ = true;
++      REXLOG_ERROR("[deko3d] copia de profundidad escalada imposible: la textura queda sin escalar");
++    }
++  } else if (!Copiar3D(*profundidad, uint32_t(x0), uint32_t(y0), ancho, alto, resuelta->imagen, dx, dy)) {
+     MarcarGpu(kGpuCopias);
+     AntesDeTransferir();
+     const DkImageView origen_vista = VistaCompleta(profundidad->imagen);
+@@ -2049,6 +2129,19 @@ void RenderDk::EscribirLecturasTerminadas() {
+ 
+ // ---- Output
+ 
++void RenderDk::FijarEscalaRender(uint32_t pitch, float escala) {
++  if (!(escala > 0.25f && escala < 1.0f)) {
++    pitch = 0;
++    escala = 1.0f;
++  }
++  if (pitch == escala_render_pitch_ && escala == escala_render_) return;
++  escala_render_pitch_ = pitch;
++  escala_render_ = escala;
++  g_.pase_valido = false;  // the next draw binds its targets again (EmpezarPase), with the new scale
++  REXLOG_INFO("[deko3d] resolucion interna: pitch {} a {:.3f} ({}x{} para 1280x720)", pitch, escala,
++              uint32_t(1280.0f * escala + 0.5f), uint32_t(720.0f * escala + 0.5f));
++}
++
+ void RenderDk::RampaGamma(const std::array<std::array<uint16_t, 3>, 256>& rampa) {
+   rampa_juego_ = rampa;
+   RecalcularRampa();
+@@ -2109,6 +2202,18 @@ bool RenderDk::CrearShadersSalida() {
+   if (!fs_bytes_profundidad_valido_) {
+     REXLOG_ERROR("[deko3d] no se pudo compilar la profundidad en bytes: {}", bytes.log);
+   }
++  const deko::Compilador::Resultado ce = compilador_.Compilar(false, kFsCopiaColorEscalada);
++  fs_copia_color_escalada_valido_ =
++      ce.ok && nucleo_.CargarShader(fs_copia_color_escalada_, ce.dksh, "copia de color escalada");
++  if (!fs_copia_color_escalada_valido_) {
++    REXLOG_ERROR("[deko3d] no se pudo compilar la copia de color escalada: {}", ce.log);
++  }
++  const deko::Compilador::Resultado ze = compilador_.Compilar(false, kFsCopiaProfundidadEscalada);
++  fs_copia_profundidad_escalada_valido_ =
++      ze.ok && nucleo_.CargarShader(fs_copia_profundidad_escalada_, ze.dksh, "copia de profundidad escalada");
++  if (!fs_copia_profundidad_escalada_valido_) {
++    REXLOG_ERROR("[deko3d] no se pudo compilar la copia de profundidad escalada: {}", ze.log);
++  }
+   const deko::Compilador::Resultado z = compilador_.Compilar(false, kFsCopiaProfundidad);
+   fs_copia_profundidad_valido_ = z.ok && nucleo_.CargarShader(fs_copia_profundidad_, z.dksh, "copia de profundidad");
+   if (!fs_copia_color_valido_ || !fs_copia_profundidad_valido_) {
+@@ -2488,13 +2593,14 @@ void RenderDk::InformePeriodico() {
+   X360_INFORME(
+       "[deko3d] por fotograma: {:.1f} copias en el motor 3D, {:.1f} barreras de fragmentos, {:.2f} frontales pintados "
+       "desde su destino sin copiar ({} copiados en total, {}), {:.2f} bandas borradas; constantes por diferencias: "
+-      "{:.1f} registros y {:.1f} empujes por dibujo",
++      "{:.1f} registros y {:.1f} empujes por dibujo; resolucion interna {:.3f} (pitch {}), {} copias escaladas en total",
+       double(copias_3d_ - informe_copias_3d_) / fotogramas,
+       double(barreras_fragmentos_ - informe_barreras_fragmentos_) / fotogramas,
+       double(frontales_ahorrados_ - informe_frontales_) / fotogramas, frontales_copiados_,
+       frontal_apagado_ ? "APAGADO por una lectura tardia" : "activo", double(bandas_completadas_ - informe_bandas_) / fotogramas,
+       dibujos ? double(registros_empujados_ - informe_registros_empujados_) / double(dibujos) : 0.0,
+-      dibujos ? double(empujes_ - informe_empujes_) / double(dibujos) : 0.0);
++      dibujos ? double(empujes_ - informe_empujes_) / double(dibujos) : 0.0, escala_render_, escala_render_pitch_,
++      copias_escaladas_);
+   X360_INFORME(
+       "[deko3d] comprobacion de texturas: por fotograma {:.2f} MB leidos para sus huellas, {:.2f} MB ahorrados por "
+       "muestreo ({:.1f} recomprobaciones solo con la muestra), {:.1f} aplazadas por el presupuesto; muestreo {} ({} "
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index 8181c5e..bf478e0 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -797,7 +797,7 @@ bool RenderDk::EmpezarPase(const uint64_t claves[5], uint32_t pitch) {
+   g_.pase_alto = alto;
+   ++serie_imagenes_;  // a new pass: the framing cache keys on it
+   g_.pase_serie = serie_imagenes_;
+-  pase_escala_ = 1.0f;
++  pase_escala_ = EscalaDePitch(pitch);  // FijarEscalaRender: the internal resolution of this pitch's targets
+   return true;
+ }
+ 

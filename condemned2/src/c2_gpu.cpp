@@ -88,6 +88,7 @@ REXCVAR_DECLARE(bool, c2_nitidez);             // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_mosaico_unico);       // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_desenfoque_movimiento);  // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_sombras);             // c2_menu.cpp
+REXCVAR_DECLARE(int32_t, c2_resolucion);       // c2_menu.cpp
 REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/switch/switch_input_driver.cpp)
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
@@ -795,6 +796,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         ++swaps_;
         counter_.fetch_add(1, std::memory_order_relaxed);
         if (EnsureRenderer()) {
+          AplicarResolucion();  // between frames, so a frame is all at one internal resolution
           // VdSwap describes the frontbuffer in fetch constant 0; an empty TexturaSwap finds nothing (black).
           {
             std::lock_guard<std::mutex> cerrojo(g_rampa_cerrojo);
@@ -1460,6 +1462,20 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (REXCVAR_GET(c2_msaa_cuarto_de_resolucion)) ++generacion_encuadre_;  // back to the mirror's for the next draw
       ++msaa_draws_;
     }
+  }
+
+  // ---- Internal resolution (c2_resolucion, options menu).
+  //
+  // The scene's surface (the one the single pass widens to 1280, MosaicoAplicar) is drawn at 630 or 540 lines into
+  // its top left corner and every resolve from it is stretched back to 1280x720 (sdk-patches/0030), so all of the
+  // game's textures keep their sizes and the post-processing reads them as before. Only with the single pass on: the
+  // two tiles would need each tile's offset scaled as well. The velocity, bloom and luminance targets (320 wide and
+  // less) stay as they are.
+  void AplicarResolucion() {
+    const int32_t lineas = REXCVAR_GET(c2_resolucion);
+    const float escala = lineas >= 720 || lineas < 360 ? 1.0f : float(lineas) / 720.0f;
+    const bool una_pasada = mosaico_pitch_ && REXCVAR_GET(c2_mosaico_unico) && swaps_ <= mosaico_swap_visto_ + 1;
+    destinos_->FijarEscalaRender(una_pasada && escala < 1.0f ? mosaico_ancho_ : 0, escala);
   }
 
   // ---- Options-menu settings that leave whole passes out (c2_menu.cpp), for frame rate.

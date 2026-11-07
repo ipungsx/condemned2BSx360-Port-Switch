@@ -114,6 +114,7 @@ Tekan **ZL + ZR + Minus** saat bermain. Atas/Bawah memilih baris, Kiri/Kanan men
 | SCENE RENDERING | ONE PASS (bawaan): adegan dirender sekali penuh. TWO TILES: dua tile seperti di Xbox 360. |
 | TEXTURE FILTERING | Trilinear sampai 16x anisotropik. |
 | ANTI-ALIASING | Mati atau FXAA. |
+| RESOLUTION | 720P (bawaan), 630P, atau 540P: adegan 3D dirender lebih kecil lalu diperbesar ke 1280x720. FPS naik, gambar lebih lembut. Butuh SCENE RENDERING = ONE PASS. |
 | MOTION BLUR | ON, atau OFF (FASTER): pass kecepatan dan blur gerak dilewati, FPS naik. |
 | SHADOWS | ON, atau OFF (FASTER): bayangan dinamis dimatikan, FPS naik. |
 | FILM GRAIN | Butiran film dari pass komposit game. |

@@ -29,6 +29,7 @@ handheld GPU clocks and adds a graphics options menu made for Condemned 2. Insta
 
 | Version | Problem on the console | Fix |
 |---|---|---|
+| 0.2.2 | Want more frame rate in handheld | Resolution option: 630p and 540p internal resolution (`sdk-patches/0030`) |
 | 0.2.1 | Few ways to trade image for frame rate | Motion blur and shadows options |
 | 0.2.1 | Dark boxes and streaks on walls, right half darker and see-through; GPU stuck at 307.2 MHz | Light stencil clears of several rectangles kept stencil-only; scene rendered in one pass; GPU clock read back, 460.8 MHz fallback |
 | 0.2.0 | Right half of the screen darker in gameplay | Right tile's depth resolved into the left tile's texture (`sdk-patches/0028`) |
@@ -51,6 +52,7 @@ next to the NRO, B closes.
 | Texture filtering | trilinear to 16x anisotropic; next start |
 | Anti-aliasing | off, FXAA |
 | Scene rendering | one pass (default) or two tiles as on the Xbox 360 |
+| Resolution | 720p, 630p or 540p for the 3D scene, stretched to 1280x720 (needs one pass) |
 | Motion blur | on, or off for frame rate (its velocity pass and blur left out) |
 | Shadows | on, or off for frame rate (no stencil shadow volumes) |
 | Film grain, depth of field, sharpen | the game's own passes, on or off |

@@ -42,7 +42,7 @@ endif()
 target_include_directories(condemned2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
                            ${REXSDK_DIR}/thirdparty/xxHash)
 
-set(C2_VERSION "0.2.1")
+set(C2_VERSION "0.2.2")
 execute_process(COMMAND git rev-parse --short=10 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 OUTPUT_VARIABLE C2_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT C2_COMMIT)
