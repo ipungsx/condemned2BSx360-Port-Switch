@@ -6,6 +6,18 @@ order on top of `rexglue-sdk-nx`.
 
 ## 0.2.1 (testing)
 
+### Dark boxes and shadow streaks on walls, right half darker (root cause)
+- **Seen:** with the one-pass build the seam was gone, but dark see-through boxes with streaks showed on the walls;
+  before it, the right half was darker and showed structures through walls.
+- **Cause:** before a light's shadow volumes Direct3D clears the stencil in that light's box only. When the box
+  crosses a tile edge the clear is cut into several rectangles (12 vertices, depth-only mode, depthcontrol 8701) and
+  it is predicated for the tile it falls in. That shape was not recognised as Direct3D's clear and was emulated as a
+  whole clear of depth *and* stencil: in the middle of the right tile's lights its depth was wiped, so the lights
+  after it failed their depth test (darker) and later draws went over the walls. In the one-pass build the clear
+  predicated for the right tile only was left out, and the light drew over the stencil of the previous one.
+- **Fix:** a stencil-only clear of any number of rectangles is emulated as a stencil-only clear, and in one pass the
+  stencil clears predicated for the second tile are done as well (`src/c2_gpu.cpp`).
+
 ### Right half still darker, walls see-through on the right (other areas)
 - **Seen:** after 0.2.0 the edge moved from x = 672 to x = 640, and in other places the right half also showed
   structures through walls, like trails of earlier frames.

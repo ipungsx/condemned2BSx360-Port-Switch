@@ -640,10 +640,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     reg_mem_waits_ = 0;
     reg_mem_wait_ns_ = 0;
     if (mosaico_pitch_) {
-      REXLOG_INFO("[gpu] single pass ({}): {} draws and {} copies of the second tile skipped, {} copies widened",
+      REXLOG_INFO("[gpu] single pass ({}): {} draws and {} copies of the second tile skipped, {} copies widened; "
+                  "{} stencil clears of the second tile done in it, {} of its other draws left out (bins {:X})",
                   REXCVAR_GET(c2_mosaico_unico) ? "on" : "off", mosaico_dibujos_saltados_, mosaico_copias_saltadas_,
-                  mosaico_copias_ensanchadas_);
+                  mosaico_copias_ensanchadas_, mosaico_borrados_forzados_, mosaico_forzados_omitidos_,
+                  mosaico_bins_segundo_);
       mosaico_dibujos_saltados_ = mosaico_copias_saltadas_ = mosaico_copias_ensanchadas_ = 0;
+      mosaico_borrados_forzados_ = mosaico_forzados_omitidos_ = 0;
     }
 #if C2_DEKO3D
     const c2::shaders::Estadisticas s = c2::shaders::Global().estadisticas();
@@ -746,21 +749,22 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 
   void PacketType3(Reader& data, uint32_t packet, uint32_t count, int depth) {
     const uint32_t opcode = (packet >> 8) & 0x7F;
+#if C2_DEKO3D
+    mosaico_forzado_ = false;
+#endif
     if ((packet & 0x1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
 #if C2_DEKO3D
-      ++frame_.predicated_skipped;
-      // In a single pass (MosaicoAplicar) a draw meant only for another tile would be lost: logged, a few times.
-      if ((opcode == xenos::PM4_DRAW_INDX || opcode == xenos::PM4_DRAW_INDX_2) && mosaico_pitch_ &&
-          REXCVAR_GET(c2_mosaico_unico) && mosaico_avisos_predicado_ < 8 &&
-          (Register(rex::graphics::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF) == mosaico_pitch_ &&
-          VentanaX(Register(rex::graphics::XE_GPU_REG_PA_SC_WINDOW_OFFSET)) == 0) {
-        ++mosaico_avisos_predicado_;
-        REXLOG_WARN("[gpu] single pass: a draw predicated away from the first tile (bin select {:X}, mask {:X}) "
-                    "is not drawn; if part of the right half goes missing, set c2_mosaico_unico = false",
-                    bin_select_, bin_mask_);
+      // In a single pass (MosaicoAplicar) the first tile also takes what Direct3D predicated for the second tile only:
+      // the stencil clear of a light that lies in the right half. Draw keeps only those (MosaicoForzado).
+      if ((opcode == xenos::PM4_DRAW_INDX || opcode == xenos::PM4_DRAW_INDX_2) && MosaicoForzarPredicado()) {
+        mosaico_forzado_ = true;
+      } else {
+        ++frame_.predicated_skipped;
+        return;  // predicate fails; predicated Swaps are always dropped
       }
-#endif
+#else
       return;  // predicate fails; predicated Swaps are always dropped
+#endif
     }
     switch (opcode) {
       case xenos::PM4_INTERRUPT: {
@@ -1066,7 +1070,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           FlushDeferredClears(false);  // a copy reads what the clear left: done whole first
           MosaicoScope mosaico(*this);
           const Mosaico modo_mosaico = MosaicoAplicar(mosaico);
-          if (modo_mosaico == Mosaico::kSaltar) {
+          if (modo_mosaico == Mosaico::kSaltar || mosaico_forzado_) {
             ++mosaico_copias_saltadas_;
             if (draw_tracing_ && draw_trace_n_ < draw_trace_cap_) {
               REXLOG_INFO("[draws]   copy of the second tile: skipped, the first copied the whole screen");
@@ -1260,6 +1264,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (draw_tracing_) DrawTraceLine(false, "second tile: already drawn by the first (single pass)");
       return;
     }
+    if (mosaico_forzado_ && MosaicoForzado()) return;
     namespace g = rex::graphics;
     // Depth only (RB_MODECONTROL 5): the GPU runs no pixel shader, so the VS is enough.
     const bool depth_only = (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5;
@@ -1308,8 +1313,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // slices are added up (ONE + ONE). Left uncleared it kept the low-resolution scene drawn there just before, and the
     // light's box (drawn over the scene with that target) showed the scene again as a flat grey pane: the square
     // "light shadows" of 0.1.9. Their color is black: the clear shader's c0 held leftovers (white with any alpha).
+    // Also a stencil-only one (depth-only mode, depthcontrol 8701) of several rectangles: a light's stencil clear,
+    // cut into up to four rectangles where its box crosses the tile (12 vertices). Taken by the generic path below, it
+    // was a whole clear of depth and stencil: in the middle of the second tile's lights its depth was gone, the lights
+    // after it failed their EQUAL test (the right half darker) and what comes after the lights drew over the walls
+    // (structures seen through them).
+    const uint32_t vertices_borrado = initiator >> 16;
+    const bool estencil_rects = dc16 == 0x8701 && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5 &&
+                                vertices_borrado >= 3 && vertices_borrado <= 3 * 64 && vertices_borrado % 3 == 0;
     const bool clear_xdk2005 = !vs_ && REXCVAR_GET(c2_borrado_xdk2005) && (initiator & 0x3F) == 8 &&
-                               (initiator >> 16) == 3 &&
+                               (vertices_borrado == 3 || estencil_rects) &&
                                (dc16 == 0x8777 || dc16 == 0x8701 ||
                                 (dc16 == 0x0000 && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4));
     if (clear_xdk2005) {
@@ -1489,12 +1502,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                                                     : "left as two tiles (c2_mosaico_unico = false)");
         }
       }
-      if (pitch == mosaico_pitch_) mosaico_swap_visto_ = swaps_;
+      if (pitch == mosaico_pitch_) {
+        mosaico_swap_visto_ = swaps_;
+        if (bin_select_ & 0x7FFFFFFFull) mosaico_bins_segundo_ = bin_select_ & 0x7FFFFFFFull;
+      }
     }
-    if (!mosaico_pitch_ || pitch != mosaico_pitch_ || !REXCVAR_GET(c2_mosaico_unico) ||
-        swaps_ <= mosaico_swap_aprendido_ || swaps_ > mosaico_swap_visto_ + 1) {
-      return Mosaico::kNada;
-    }
+    if (!MosaicoActivo(pitch)) return Mosaico::kNada;
     if (ventana_x != 0) return Mosaico::kSaltar;
     scope.Set(g::XE_GPU_REG_RB_SURFACE_INFO, (surface & ~uint32_t(0x3FFF)) | mosaico_ancho_);
     const uint32_t br = Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR);
@@ -1531,6 +1544,47 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     c.fetch_vertices[1] = (6u << 2) | uint32_t(xenos::Endian::kNone);
     ++mosaico_copias_ensanchadas_;
   }
+  // The second tile's bins (bin select while it is drawn, 0xC in Condemned 2; the first is 0x80000003).
+  bool MosaicoActivo(uint32_t pitch) const {
+    return mosaico_pitch_ && pitch == mosaico_pitch_ && REXCVAR_GET(c2_mosaico_unico) &&
+           swaps_ > mosaico_swap_aprendido_ && swaps_ <= mosaico_swap_visto_ + 1;
+  }
+  bool MosaicoForzarPredicado() const {
+    namespace g = rex::graphics;
+    const uint64_t segundo = mosaico_bins_segundo_;
+    return segundo && !(bin_select_ & segundo) && (bin_mask_ & segundo) &&
+           MosaicoActivo(Register(g::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF) &&
+           VentanaX(Register(g::XE_GPU_REG_PA_SC_WINDOW_OFFSET)) == 0;
+  }
+  // A draw packet predicated for the second tile only, taken in the first (MosaicoForzarPredicado). Of those only
+  // Direct3D's stencil-only clears are done (a light's in the right half: without it that light drew over the stencil
+  // left by the previous one, boxes of shadow on the walls). Anything else is left out, as the first tile always did.
+  // True when the draw is done with.
+  bool MosaicoForzado() {
+    namespace g = rex::graphics;
+    const uint32_t initiator = Register(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
+    const uint32_t n = initiator >> 16;
+    const uint32_t dc16 = Register(g::XE_GPU_REG_RB_DEPTHCONTROL) & 0xFFFF;
+    if (!vs_ && (initiator & 0x3F) == 8 && n >= 3 && n % 3 == 0 && n <= 3 * 64 && dc16 == 0x8701) {
+      ++mosaico_borrados_forzados_;
+      if (draw_tracing_) DrawTraceLine(true, "second tile's stencil clear, done in the single pass");
+      EmulateClear(0, true, true);
+      return true;
+    }
+    ++mosaico_forzados_omitidos_;
+    if (mosaico_avisos_predicado_ < 8) {
+      ++mosaico_avisos_predicado_;
+      REXLOG_WARN("[gpu] single pass: a draw meant for the second tile only (bin select {:X}, mask {:X}, {} vertices, "
+                  "depthcontrol {:08X}, VS {}) is left out; if something goes missing in the right half, set "
+                  "c2_mosaico_unico = false",
+                  bin_select_, bin_mask_, n, Register(g::XE_GPU_REG_RB_DEPTHCONTROL), vs_ ? int(vs_->numero) : -1);
+    }
+    if (draw_tracing_) DrawTraceLine(false, "second tile only: left out of the single pass");
+    return true;
+  }
+  bool mosaico_forzado_ = false;
+  uint64_t mosaico_bins_segundo_ = 0;
+  uint64_t mosaico_borrados_forzados_ = 0, mosaico_forzados_omitidos_ = 0;
   uint32_t mosaico_pitch_ = 0, mosaico_ancho_ = 0, mosaico_borde_ = 0;
   uint64_t mosaico_swap_aprendido_ = 0, mosaico_swap_visto_ = 0;
   uint32_t mosaico_rect_ = 0;
