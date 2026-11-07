@@ -111,6 +111,7 @@ Tekan **ZL + ZR + Minus** saat bermain. Atas/Bawah memilih baris, Kiri/Kanan men
 |---|---|
 | CPU | STOCK, 1224, 1428, 1581, 1785 MHz (bawaan 1785, laju boost resmi konsol). Langsung berlaku. |
 | GPU (HANDHELD) | 307, 384, 460 MHz lewat profil Horizon; 614 dan 768 MHz lewat sys-clk / Horizon OC (bawaan 768). Tanpa sysmodule tersebut tetap 460 MHz. Di dock selalu 768 MHz. |
+| SCENE RENDERING | ONE PASS (bawaan): adegan dirender sekali penuh. TWO TILES: dua tile seperti di Xbox 360. |
 | TEXTURE FILTERING | Trilinear sampai 16x anisotropik. |
 | ANTI-ALIASING | Mati atau FXAA. |
 | FILM GRAIN | Butiran film dari pass komposit game. |

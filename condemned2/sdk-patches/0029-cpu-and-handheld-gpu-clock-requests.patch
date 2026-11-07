@@ -48,7 +48,7 @@ index 2f5ed2c..ed1f4b7 100644
  #endif  // REX_PLATFORM_SWITCH
  
 diff --git a/src/ui/switch_apm.cpp b/src/ui/switch_apm.cpp
-index b71ce09..a3e55e1 100644
+index b71ce09..6bbc85f 100644
 --- a/src/ui/switch_apm.cpp
 +++ b/src/ui/switch_apm.cpp
 @@ -57,7 +57,10 @@
@@ -62,7 +62,7 @@ index b71ce09..a3e55e1 100644
  #include <cstdio>
  
  namespace {
-@@ -313,7 +316,142 @@ extern "C" void RexSwitchApmAplicar(void) {
+@@ -313,7 +316,198 @@ extern "C" void RexSwitchApmAplicar(void) {
    }
  }
  
@@ -82,12 +82,12 @@ index b71ce09..a3e55e1 100644
 +std::atomic<bool> g_cpu_por_sysclk{false};
 +constexpr u32 kMargenCpuHz = 20000000;
 +
-+bool LeerCpu(u32& hz) {
++bool LeerModulo(PcvModuleId modulo, u32& hz) {
 +  hz = 0;
 +  if (R_FAILED(clkrstInitialize())) return false;
 +  bool ok = false;
 +  ClkrstSession ses{};
-+  if (R_SUCCEEDED(clkrstOpenSession(&ses, PcvModuleId_CpuBus, 3))) {
++  if (R_SUCCEEDED(clkrstOpenSession(&ses, modulo, 3))) {
 +    ok = R_SUCCEEDED(clkrstGetClockRate(&ses, &hz));
 +    clkrstCloseSession(&ses);
 +  }
@@ -95,16 +95,67 @@ index b71ce09..a3e55e1 100644
 +  return ok;
 +}
 +
-+bool FijarCpu(u32 hz) {
++bool FijarModulo(PcvModuleId modulo, u32 hz) {
 +  if (R_FAILED(clkrstInitialize())) return false;
 +  bool ok = false;
 +  ClkrstSession ses{};
-+  if (R_SUCCEEDED(clkrstOpenSession(&ses, PcvModuleId_CpuBus, 3))) {
++  if (R_SUCCEEDED(clkrstOpenSession(&ses, modulo, 3))) {
 +    ok = R_SUCCEEDED(clkrstSetClockRate(&ses, hz));
 +    clkrstCloseSession(&ses);
 +  }
 +  clkrstExit();
 +  return ok;
++}
++
++bool LeerCpu(u32& hz) { return LeerModulo(PcvModuleId_CpuBus, hz); }
++bool FijarCpu(u32 hz) { return FijarModulo(PcvModuleId_CpuBus, hz); }
++
++/*
++ * The handheld GPU asked of the clock sysmodule (RexSwitchApmPedirGpuOcMhz), checked once per second: a
++ * sysmodule can take the override and still not set it (Horizon OC left the GPU at 307.2 MHz, below even
++ * the 460.8 of Horizon's own profile, and the game ran at 18 fps). After three readings short of it the
++ * override is released and the GPU is held at 460.8 MHz through clkrst.
++ */
++constexpr u32 kGpuPerfilHz = 460800000;
++std::atomic<u32> g_gpu_oc_hz{0};
++std::atomic<u32> g_gpu_minimo_hz{0};
++int g_gpu_fallos = 0;
++int g_gpu_correcciones = 0;
++bool g_gpu_confirmada = false;
++
++void VigilarGpu() {
++  if (appletGetOperationMode() != AppletOperationMode_Handheld) {
++    g_gpu_fallos = 0;
++    return;  // docked: the console's own 768 MHz
++  }
++  u32 actual = 0;
++  if (!LeerModulo(PcvModuleId_GPU, actual)) return;
++  const u32 oc = g_gpu_oc_hz.load(std::memory_order_relaxed);
++  if (oc) {
++    if (actual + kMargenCpuHz >= oc) {
++      g_gpu_fallos = 0;
++      if (!g_gpu_confirmada) {
++        g_gpu_confirmada = true;
++        std::fprintf(stderr, "[apm] GPU confirmada a %.1f MHz por el sysmodule de relojes\n", double(actual) / 1e6);
++      }
++      return;
++    }
++    if (++g_gpu_fallos < 3) return;
++    std::fprintf(stderr,
++                 "[apm] el sysmodule acepto la GPU a %.1f MHz pero lee %.1f MHz: se suelta el override y se queda en "
++                 "%.1f MHz por clkrst\n",
++                 double(oc) / 1e6, double(actual) / 1e6, double(kGpuPerfilHz) / 1e6);
++    rex::ui::switch_sysclk::PedirGpu(0);
++    g_gpu_oc_hz.store(0, std::memory_order_relaxed);
++    g_gpu_minimo_hz.store(kGpuPerfilHz, std::memory_order_relaxed);
++  }
++  const u32 minimo = g_gpu_minimo_hz.load(std::memory_order_relaxed);
++  if (!minimo || actual + kMargenCpuHz >= minimo) return;
++  const bool ok = FijarModulo(PcvModuleId_GPU, minimo);
++  if (g_gpu_correcciones++ % 60 == 0) {
++    std::fprintf(stderr, "[apm] la GPU estaba a %.1f MHz: se vuelve a %.1f (%s, %d vez/veces)\n",
++                 double(actual) / 1e6, double(minimo) / 1e6, ok ? "aceptado" : "RECHAZADO", g_gpu_correcciones);
++  }
 +}
 +
 +void VigilarCpu() {
@@ -196,16 +247,21 @@ index b71ce09..a3e55e1 100644
 +  if (!salida.exchange(true)) {
 +    std::atexit([] { rex::ui::switch_sysclk::PedirGpu(0); });
 +  }
++  g_gpu_oc_hz.store(hz, std::memory_order_relaxed);  // checked by VigilarGpu
++  g_gpu_minimo_hz.store(0, std::memory_order_relaxed);
++  g_gpu_fallos = 0;
++  g_gpu_confirmada = false;
 +  std::fprintf(stderr, "[apm] GPU a %.1f MHz pedidos al sysmodule de relojes\n", double(hz) / 1e6);
 +  return 1;
 +}
 +
  extern "C" void RexSwitchApmVigilar(void) {
 +  VigilarCpu();
++  VigilarGpu();
    const u32 emc0 = g_emc_original.load(std::memory_order_relaxed);
    if (emc0 == 0 || g_rendido_emc.load(std::memory_order_relaxed)) {
      return;  // nothing changed, or we already know this firmware does not allow it
-@@ -350,6 +488,9 @@ extern "C" void RexSwitchApmVigilar(void) {
+@@ -350,6 +544,9 @@ extern "C" void RexSwitchApmVigilar(void) {
  #else   // !REX_PLATFORM_SWITCH
  extern "C" void RexSwitchApmPedirGpuMhz(int) {}
  extern "C" void RexSwitchApmPermitirRam1600(int) {}

@@ -29,6 +29,7 @@ handheld GPU clocks and adds a graphics options menu made for Condemned 2. Insta
 
 | Version | Problem on the console | Fix |
 |---|---|---|
+| 0.2.1 | Right half still darker and see-through in other areas; GPU stuck at 307.2 MHz | Scene rendered in one pass instead of two tiles; GPU clock read back, 460.8 MHz fallback |
 | 0.2.0 | Right half of the screen darker in gameplay | Right tile's depth resolved into the left tile's texture (`sdk-patches/0028`) |
 | 0.2.0 | 25 to 40 fps, GPU busy ~95 % of each frame | CPU 1785 MHz, handheld GPU up to 768 MHz via sys-clk / Horizon OC (`sdk-patches/0029`) |
 | 0.2.0 | Film grain option did nothing, no C2 effects in the menu | Effect constants found per shader by name: film grain, depth of field, sharpen |
@@ -48,6 +49,7 @@ next to the NRO, B closes.
 | GPU (handheld) | 307, 384, 460 MHz (Horizon profiles); 614, 768 MHz with sys-clk / Horizon OC (default 768, else 460); next start |
 | Texture filtering | trilinear to 16x anisotropic; next start |
 | Anti-aliasing | off, FXAA |
+| Scene rendering | one pass (default) or two tiles as on the Xbox 360 |
 | Film grain, depth of field, sharpen | the game's own passes, on or off |
 | Brightness, gamma | output pass |
 | Vibration, FPS counter | |

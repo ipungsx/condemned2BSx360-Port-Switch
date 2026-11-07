@@ -4,6 +4,25 @@ Every fix made while bringing Condemned 2: Bloodshot up on the Switch, newest fi
 the console, what caused it and where the fix lives. SDK fixes are patches in `condemned2/sdk-patches/`, applied in
 order on top of `rexglue-sdk-nx`.
 
+## 0.2.1 (testing)
+
+### Right half still darker, walls see-through on the right (other areas)
+- **Seen:** after 0.2.0 the edge moved from x = 672 to x = 640, and in other places the right half also showed
+  structures through walls, like trails of earlier frames.
+- **Cause:** the scene is still rendered as two tiles that are put together later; every pass of the second tile
+  depends on textures the first one wrote, and any difference shows as a seam.
+- **Fix:** the scene is rendered in one pass. The first tile is widened to the whole screen (surface pitch and window
+  scissor 1280, its copies cut at the tile edge go on to the right edge) and the second tile's draws and copies are
+  skipped (`src/c2_gpu.cpp`, `MosaicoAplicar`). Half the draws of the scene, so also faster. The options menu row
+  "SCENE RENDERING" switches back to two tiles (`c2_mosaico_unico = false`).
+
+### GPU stuck at 307.2 MHz with Horizon OC (18 fps)
+- **Cause:** 0.2.0 trusted the clock sysmodule's answer: the override for 768 MHz was accepted but not applied, and
+  Horizon's own 460 MHz profile had been skipped.
+- **Fix:** the 460 MHz profile is always applied first; the GPU is read back once per second and, if the sysmodule has
+  not set what it accepted after three seconds, the override is released and the GPU is held at 460.8 MHz through
+  clkrst (`sdk-patches/0029`, `src/c2_app.h`).
+
 ## 0.2.0
 
 ### Right half of the screen darker in gameplay

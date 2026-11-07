@@ -117,11 +117,12 @@ class C2App : public rex::ReXApp {
     c2::menu::Instalar();
 #if defined(__SWITCH__)
     if (const int32_t mhz = REXCVAR_GET(c2_gpu_portatil_mhz); mhz > 0) {
-      // Above 460 MHz only a clock sysmodule can; without one (or if it refuses) Horizon's 460 profile is used.
-      if (mhz <= 460 || !RexSwitchApmPedirGpuOcMhz(mhz)) {
-        RexSwitchApmPedirGpuMhz(mhz > 460 ? 460 : mhz);
-        RexSwitchApmAplicar();
-      }
+      // Horizon's own profile first (460 MHz at most), always: it is what the game falls back on. Above that only a
+      // clock sysmodule can, and RexSwitchApmVigilar checks that it really did (0.2.0 trusted its answer and with
+      // Horizon OC the GPU stayed at 307.2 MHz).
+      RexSwitchApmPedirGpuMhz(mhz > 460 ? 460 : mhz);
+      RexSwitchApmAplicar();
+      if (mhz > 460) RexSwitchApmPedirGpuOcMhz(mhz);
     }
     if (const int32_t mhz = REXCVAR_GET(c2_cpu_mhz); mhz > 0) {
       RexSwitchApmPedirCpuMhz(mhz);

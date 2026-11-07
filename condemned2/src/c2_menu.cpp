@@ -37,6 +37,9 @@ REXCVAR_DEFINE_BOOL(c2_fxaa, false, "C2", "FXAA in the output pass (options menu
 REXCVAR_DEFINE_BOOL(c2_grano_pelicula, true, "C2", "The film grain of the composite pass (options menu)");
 REXCVAR_DEFINE_BOOL(c2_profundidad_campo, true, "C2", "The depth of field blur (options menu)");
 REXCVAR_DEFINE_BOOL(c2_nitidez, true, "C2", "The game's sharpen pass (options menu)");
+REXCVAR_DEFINE_BOOL(c2_mosaico_unico, true, "C2",
+                    "The scene in one pass instead of the Xbox 360's two EDRAM tiles (options menu): half the draws, "
+                    "no seam between the halves. false = two tiles as on the console");
 REXCVAR_DEFINE_INT32(c2_brillo, 0, "C2", "Brightness in the output pass, -5 to +5 (options menu)").range(-5, 5);
 REXCVAR_DEFINE_INT32(c2_gamma, 100, "C2", "Gamma in the output pass in hundredths, 80 to 120 (options menu)")
     .range(80, 120);
@@ -111,6 +114,10 @@ std::vector<Fila>& Filas() {
 #endif
                  },
                  false});
+    // The scene in one pass: the Xbox 360 draws it twice, as two halves that fit its EDRAM (c2_gpu.cpp, MosaicoAplicar).
+    f.push_back({"SCENE RENDERING", "c2_mosaico_unico", {"TWO TILES", "ONE PASS"}, {"false", "true"},
+                 [] { return size_t(REXCVAR_GET(c2_mosaico_unico)); },
+                 [](size_t i) { REXCVAR_SET(c2_mosaico_unico, i == 1); }, false});
     f.push_back({"TEXTURE FILTERING", "nfsmw_nativo_anisotropico", {"TRILINEAR", "2x", "4x", "8x", "16x"},
                  {"0", "2", "4", "8", "16"},
                  [] { return Cercano({0, 2, 4, 8, 16}, REXCVAR_GET(nfsmw_nativo_anisotropico)); },
@@ -286,10 +293,11 @@ void CargarOpciones() {
   if (!std::filesystem::exists(Fichero(), ec)) return;
   rex::cvar::LoadConfig(Fichero());
   REXLOG_INFO("c2: opciones de {} (CPU {} MHz, GPU portatil {} MHz, anisotropico {}, FXAA {}, grano {}, "
-              "profundidad de campo {}, nitidez {}, brillo {}, gamma {})",
+              "profundidad de campo {}, nitidez {}, una pasada {}, brillo {}, gamma {})",
               Fichero().string(), REXCVAR_GET(c2_cpu_mhz), REXCVAR_GET(c2_gpu_portatil_mhz),
               REXCVAR_GET(nfsmw_nativo_anisotropico), REXCVAR_GET(c2_fxaa), REXCVAR_GET(c2_grano_pelicula),
-              REXCVAR_GET(c2_profundidad_campo), REXCVAR_GET(c2_nitidez), REXCVAR_GET(c2_brillo),
+              REXCVAR_GET(c2_profundidad_campo), REXCVAR_GET(c2_nitidez), REXCVAR_GET(c2_mosaico_unico),
+              REXCVAR_GET(c2_brillo),
               REXCVAR_GET(c2_gamma));
 }
 

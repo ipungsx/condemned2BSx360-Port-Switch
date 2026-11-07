@@ -85,6 +85,7 @@
 REXCVAR_DECLARE(bool, c2_grano_pelicula);      // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_profundidad_campo);   // c2_menu.cpp
 REXCVAR_DECLARE(bool, c2_nitidez);             // c2_menu.cpp
+REXCVAR_DECLARE(bool, c2_mosaico_unico);       // c2_menu.cpp
 REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/switch/switch_input_driver.cpp)
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
@@ -638,6 +639,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                 double(reg_mem_wait_ns_) / 1e6);
     reg_mem_waits_ = 0;
     reg_mem_wait_ns_ = 0;
+    if (mosaico_pitch_) {
+      REXLOG_INFO("[gpu] single pass ({}): {} draws and {} copies of the second tile skipped, {} copies widened",
+                  REXCVAR_GET(c2_mosaico_unico) ? "on" : "off", mosaico_dibujos_saltados_, mosaico_copias_saltadas_,
+                  mosaico_copias_ensanchadas_);
+      mosaico_dibujos_saltados_ = mosaico_copias_saltadas_ = mosaico_copias_ensanchadas_ = 0;
+    }
 #if C2_DEKO3D
     const c2::shaders::Estadisticas s = c2::shaders::Global().estadisticas();
     REXLOG_INFO("[gpu] shaders: {} loads (address {}, address refused {}, learned {}, microcode {}, similar {}, "
@@ -742,6 +749,16 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     if ((packet & 0x1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
 #if C2_DEKO3D
       ++frame_.predicated_skipped;
+      // In a single pass (MosaicoAplicar) a draw meant only for another tile would be lost: logged, a few times.
+      if ((opcode == xenos::PM4_DRAW_INDX || opcode == xenos::PM4_DRAW_INDX_2) && mosaico_pitch_ &&
+          REXCVAR_GET(c2_mosaico_unico) && mosaico_avisos_predicado_ < 8 &&
+          (Register(rex::graphics::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF) == mosaico_pitch_ &&
+          VentanaX(Register(rex::graphics::XE_GPU_REG_PA_SC_WINDOW_OFFSET)) == 0) {
+        ++mosaico_avisos_predicado_;
+        REXLOG_WARN("[gpu] single pass: a draw predicated away from the first tile (bin select {:X}, mask {:X}) "
+                    "is not drawn; if part of the right half goes missing, set c2_mosaico_unico = false",
+                    bin_select_, bin_mask_);
+      }
 #endif
       return;  // predicate fails; predicated Swaps are always dropped
     }
@@ -1047,6 +1064,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         // A copy-mode draw is a resolve and/or a clear.
         if (rex::x360::EsCopia(registers_.data())) {
           FlushDeferredClears(false);  // a copy reads what the clear left: done whole first
+          MosaicoScope mosaico(*this);
+          const Mosaico modo_mosaico = MosaicoAplicar(mosaico);
+          if (modo_mosaico == Mosaico::kSaltar) {
+            ++mosaico_copias_saltadas_;
+            if (draw_tracing_ && draw_trace_n_ < draw_trace_cap_) {
+              REXLOG_INFO("[draws]   copy of the second tile: skipped, the first copied the whole screen");
+            }
+            break;
+          }
           ResolveCatalog();
           FrameTraceCopy();
           if (draw_tracing_ && draw_trace_n_ < draw_trace_cap_) {
@@ -1062,7 +1088,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                         (Register(g::XE_GPU_REG_RB_COPY_DEST_PITCH) >> 16) & 0x3FFF,
                         (Register(g::XE_GPU_REG_RB_COPY_DEST_INFO) >> 7) & 0x3F);
           }
-          destinos_->Copiar(rex::x360::LeerRegistrosCopia(registers_.data()));
+          rex::x360::RegistrosCopia copia = rex::x360::LeerRegistrosCopia(registers_.data());
+          if (modo_mosaico == Mosaico::kEnsanchado) MosaicoEnsancharCopia(copia);
+          destinos_->Copiar(copia);
           break;
         }
         Draw();
@@ -1225,6 +1253,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   void Draw() {
     ++geometria_;
     FrameTraceDraw();
+    // Predicated tiling as one pass (MosaicoAplicar): the second tile's draws are already in the first.
+    MosaicoScope mosaico(*this);
+    if (MosaicoAplicar(mosaico) == Mosaico::kSaltar) {
+      ++mosaico_dibujos_saltados_;
+      if (draw_tracing_) DrawTraceLine(false, "second tile: already drawn by the first (single pass)");
+      return;
+    }
     namespace g = rex::graphics;
     // Depth only (RB_MODECONTROL 5): the GPU runs no pixel shader, so the VS is enough.
     const bool depth_only = (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5;
@@ -1401,6 +1436,106 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++msaa_draws_;
     }
   }
+
+  // ---- Predicated tiling as one pass (c2_mosaico_unico).
+  //
+  // Condemned 2 renders its 1280x720 scene as two 2X EDRAM tiles of 672 pixels: the whole scene twice, the second
+  // time with window offset -608, and every resolve twice (the second at the copy base moved 608 texels on). The
+  // renderer has no EDRAM to fit, so the first tile is widened to the whole screen (its surface's pitch and its window
+  // scissor to 1280, the copies cut at the tile edge to the screen's right edge) and everything of the second tile is
+  // dropped: the draws, their copies. One pass instead of two: half the draws (the scene is GPU-bound in handheld),
+  // and no seam between two halves rendered apart. The right half was darker and see-through in places, where the
+  // second tile's passes read textures the first one had filled.
+  // Learned from the first draw or copy with a negative window offset: the tiled surface's pitch (880), the screen
+  // width (that tile's scissor right edge, 1280) and the first tile's width (1280 - 608 = 672). Applied only while a
+  // second tile keeps showing up (this frame or the previous one), and not in the frame it is learned in.
+  enum class Mosaico { kNada, kSaltar, kEnsanchado };
+  class MosaicoScope {
+   public:
+    explicit MosaicoScope(RingGraphicsSystem& system) : system_(system) {}
+    ~MosaicoScope() {
+      for (uint32_t i = 0; i < count_; ++i) system_.registers_[saved_[i].first] = saved_[i].second;
+      if (count_) ++system_.generacion_encuadre_;  // back to the mirror's scissor for the next draw
+    }
+    void Set(uint32_t index, uint32_t value) {
+      saved_[count_++] = {index, system_.registers_[index]};
+      system_.registers_[index] = value;
+    }
+
+   private:
+    RingGraphicsSystem& system_;
+    std::pair<uint32_t, uint32_t> saved_[2];
+    uint32_t count_ = 0;
+  };
+  static int32_t VentanaX(uint32_t ventana) { return int32_t((ventana & 0x7FFF) << 17) >> 17; }
+  Mosaico MosaicoAplicar(MosaicoScope& scope) {
+    namespace g = rex::graphics;
+    const uint32_t surface = Register(g::XE_GPU_REG_RB_SURFACE_INFO);
+    const uint32_t pitch = surface & 0x3FFF;
+    const int32_t ventana_x = VentanaX(Register(g::XE_GPU_REG_PA_SC_WINDOW_OFFSET));
+    if (ventana_x < 0) {
+      if (!mosaico_pitch_) {
+        const uint32_t ancho = Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR) & 0x3FFF;
+        const int32_t borde = int32_t(ancho) + ventana_x;
+        if (ancho >= 640 && ancho <= 4096 && borde > 0 && uint32_t(borde) <= pitch && uint32_t(borde) < ancho) {
+          mosaico_pitch_ = pitch;
+          mosaico_ancho_ = ancho;
+          mosaico_borde_ = uint32_t(borde);
+          mosaico_swap_aprendido_ = swaps_;
+          REXLOG_INFO("[gpu] predicated tiling: surface pitch {}, screen {} wide, first tile {} wide (window offset "
+                      "{}); {}",
+                      pitch, ancho, borde, ventana_x,
+                      REXCVAR_GET(c2_mosaico_unico) ? "rendered as one pass from the next frame on"
+                                                    : "left as two tiles (c2_mosaico_unico = false)");
+        }
+      }
+      if (pitch == mosaico_pitch_) mosaico_swap_visto_ = swaps_;
+    }
+    if (!mosaico_pitch_ || pitch != mosaico_pitch_ || !REXCVAR_GET(c2_mosaico_unico) ||
+        swaps_ <= mosaico_swap_aprendido_ || swaps_ > mosaico_swap_visto_ + 1) {
+      return Mosaico::kNada;
+    }
+    if (ventana_x != 0) return Mosaico::kSaltar;
+    scope.Set(g::XE_GPU_REG_RB_SURFACE_INFO, (surface & ~uint32_t(0x3FFF)) | mosaico_ancho_);
+    const uint32_t br = Register(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR);
+    if ((br & 0x3FFF) == mosaico_borde_) {
+      scope.Set(g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, (br & ~uint32_t(0x3FFF)) | mosaico_ancho_);
+    }
+    ++generacion_encuadre_;
+    return Mosaico::kEnsanchado;
+  }
+  // A first-tile copy cut where the second tile begins (x1 at or past 608: 640 for the post-processing's halves, 1280
+  // clipped to 672 for the scene) goes on to the screen's right edge, which the second tile's copy used to fill.
+  void MosaicoEnsancharCopia(rex::x360::RegistrosCopia& c) {
+    const uint32_t f0 = c.fetch_vertices[0], f1 = c.fetch_vertices[1];
+    if ((f0 & 0x3) != uint32_t(xenos::FetchConstantType::kVertex) || ((f1 >> 2) & 0xFFFFFF) != 6) return;
+    const uint8_t* v = memory_->TranslatePhysical((f0 >> 2) * 4);
+    if (!v) return;
+    float xy[6];
+    for (int i = 0; i < 6; ++i) {
+      uint32_t w;
+      std::memcpy(&w, v + i * 4, 4);
+      w = xenos::GpuSwap(w, static_cast<xenos::Endian>(f1 & 0x3));
+      std::memcpy(&xy[i], &w, 4);
+    }
+    const float x0 = std::min({xy[0], xy[2], xy[4]}), x1 = std::max({xy[0], xy[2], xy[4]});
+    const float y0 = std::min({xy[1], xy[3], xy[5]}), y1 = std::max({xy[1], xy[3], xy[5]});
+    const float inicio_segundo = float(mosaico_ancho_ - mosaico_borde_);
+    if (!(x1 >= inicio_segundo) || x1 >= float(mosaico_ancho_)) return;
+    if (!mosaico_rect_) mosaico_rect_ = memory_->SystemHeapAlloc(32, 32, rex::memory::kSystemHeapPhysical);
+    if (!mosaico_rect_) return;
+    const float rect[6] = {x0, y0, float(mosaico_ancho_), y0, x0, y1};  // host order, read with Endian::kNone
+    std::memcpy(memory_->TranslateVirtual<uint8_t*>(mosaico_rect_), rect, sizeof(rect));
+    const uint32_t physical = memory_->GetPhysicalAddress(mosaico_rect_);
+    c.fetch_vertices[0] = (physical & ~uint32_t(0x3)) | uint32_t(xenos::FetchConstantType::kVertex);
+    c.fetch_vertices[1] = (6u << 2) | uint32_t(xenos::Endian::kNone);
+    ++mosaico_copias_ensanchadas_;
+  }
+  uint32_t mosaico_pitch_ = 0, mosaico_ancho_ = 0, mosaico_borde_ = 0;
+  uint64_t mosaico_swap_aprendido_ = 0, mosaico_swap_visto_ = 0;
+  uint32_t mosaico_rect_ = 0;
+  uint64_t mosaico_dibujos_saltados_ = 0, mosaico_copias_saltadas_ = 0, mosaico_copias_ensanchadas_ = 0;
+  uint32_t mosaico_avisos_predicado_ = 0;
 
   // The register mirror with a multisampled surface turned into the 1x surface it aliases: 4X doubles width and
   // height (pitch x2), 2X doubles the height (samples stacked vertically). Viewport and scissors scale the same way.
