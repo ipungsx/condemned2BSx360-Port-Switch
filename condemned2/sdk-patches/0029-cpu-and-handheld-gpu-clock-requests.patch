@@ -1,0 +1,368 @@
+diff --git a/include/rex/ui/switch_apm.h b/include/rex/ui/switch_apm.h
+index e0ab136..fde45ee 100644
+--- a/include/rex/ui/switch_apm.h
++++ b/include/rex/ui/switch_apm.h
+@@ -35,6 +35,20 @@ void RexSwitchApmAplicar(void);
+  */
+ void RexSwitchApmVigilar(void);
+ 
++/*
++ * CPU MHz (condemned2-nx): 0 = the rate the console had; otherwise the highest pcv rate at or below it (1020, 1224,
++ * 1428, 1581, 1785). Set at once with clkrst, put back by RexSwitchApmVigilar if the system lowers it, restored at
++ * exit. Callable at any time (the options menu).
++ */
++void RexSwitchApmPedirCpuMhz(int mhz);
++void RexSwitchApmRestaurarCpu(void);
++
++/*
++ * Handheld GPU above 460.8 MHz (condemned2-nx): 614, 691 or 768 MHz through a clock sysmodule's override (sys-clk /
++ * Horizon OC). Returns 1 if taken, 0 if there is none (stay on RexSwitchApmPedirGpuMhz). 0 MHz releases it.
++ */
++int RexSwitchApmPedirGpuOcMhz(int mhz);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/include/rex/ui/switch_sysclk.h b/include/rex/ui/switch_sysclk.h
+index 2f5ed2c..ed1f4b7 100644
+--- a/include/rex/ui/switch_sysclk.h
++++ b/include/rex/ui/switch_sysclk.h
+@@ -27,10 +27,19 @@ void SeguirModo(bool sobremesa_efectivo, bool sobremesa_real);
+ // Turns all of this on or off (the game passes it from its cvar). Turning it off releases the clocks.
+ void Habilitar(bool habilitado);
+ 
++// CPU for the whole session, independent of Reverse-NX (hz 0 releases it). Returns false when there is no
++// clock sysmodule or it refused, so the caller can fall back to clkrst. With sys-clk / Horizon OC running
++// this is the only request that lasts: the sysmodule rewrites a clkrst rate on its next tick.
++bool PedirCpu(uint32_t hz);
++// The same for the GPU (the game's handheld GPU setting above the 460.8 MHz of Horizon's own profiles).
++bool PedirGpu(uint32_t hz);
++
+ #else
+ 
+ inline void SeguirModo(bool, bool) {}
+ inline void Habilitar(bool) {}
++inline bool PedirCpu(uint32_t) { return false; }
++inline bool PedirGpu(uint32_t) { return false; }
+ 
+ #endif  // REX_PLATFORM_SWITCH
+ 
+diff --git a/src/ui/switch_apm.cpp b/src/ui/switch_apm.cpp
+index b71ce09..a3e55e1 100644
+--- a/src/ui/switch_apm.cpp
++++ b/src/ui/switch_apm.cpp
+@@ -57,7 +57,10 @@
+ 
+ #include <switch.h>
+ 
++#include "rex/ui/switch_sysclk.h"
++
+ #include <atomic>
++#include <cstdlib>
+ #include <cstdio>
+ 
+ namespace {
+@@ -313,7 +316,142 @@ extern "C" void RexSwitchApmAplicar(void) {
+   }
+ }
+ 
++
++/*
++ * CPU clock (condemned2-nx). The game is CPU-bound in handheld (its main thread at ~98 % of a core, the three
++ * cores at ~80 %), and apm's handheld configurations leave the CPU at 1020 MHz. Like sys-clk, the rate is set with
++ * clkrst on PcvModuleId_CpuBus; the profile thread's tick puts it back if the system lowers it (a mode change, waking
++ * from sleep), and the rate the console had is restored at exit. 1785 MHz is the rate of the console's own boost
++ * mode, used by commercial games while loading.
++ */
++namespace {
++std::atomic<u32> g_cpu_objetivo{0};
++std::atomic<u32> g_cpu_original{0};
++std::atomic<int> g_correcciones_cpu{0};
++std::atomic<bool> g_aviso_cpu{false};
++std::atomic<bool> g_cpu_por_sysclk{false};
++constexpr u32 kMargenCpuHz = 20000000;
++
++bool LeerCpu(u32& hz) {
++  hz = 0;
++  if (R_FAILED(clkrstInitialize())) return false;
++  bool ok = false;
++  ClkrstSession ses{};
++  if (R_SUCCEEDED(clkrstOpenSession(&ses, PcvModuleId_CpuBus, 3))) {
++    ok = R_SUCCEEDED(clkrstGetClockRate(&ses, &hz));
++    clkrstCloseSession(&ses);
++  }
++  clkrstExit();
++  return ok;
++}
++
++bool FijarCpu(u32 hz) {
++  if (R_FAILED(clkrstInitialize())) return false;
++  bool ok = false;
++  ClkrstSession ses{};
++  if (R_SUCCEEDED(clkrstOpenSession(&ses, PcvModuleId_CpuBus, 3))) {
++    ok = R_SUCCEEDED(clkrstSetClockRate(&ses, hz));
++    clkrstCloseSession(&ses);
++  }
++  clkrstExit();
++  return ok;
++}
++
++void VigilarCpu() {
++  const u32 objetivo = g_cpu_objetivo.load(std::memory_order_relaxed);
++  if (objetivo == 0) return;
++  u32 actual = 0;
++  if (!LeerCpu(actual) || actual + kMargenCpuHz >= objetivo) return;
++  const bool ok = FijarCpu(objetivo);
++  const int n = g_correcciones_cpu.fetch_add(1, std::memory_order_relaxed) + 1;
++  if (!g_aviso_cpu.exchange(true) || n % 60 == 0) {
++    std::fprintf(stderr, "[apm] la CPU habia bajado a %.1f MHz: se vuelve a %.1f (%s, %d vez/veces)\n",
++                 double(actual) / 1e6, double(objetivo) / 1e6, ok ? "aceptado" : "RECHAZADO", n);
++  }
++}
++}  // namespace
++
++extern "C" void RexSwitchApmPedirCpuMhz(int mhz) {
++  u32 actual = 0;
++  if (!LeerCpu(actual)) {
++    std::fprintf(stderr, "[apm] CPU: clkrst no disponible, el reloj se queda como esta\n");
++    return;
++  }
++  u32 esperado = 0;
++  if (g_cpu_original.compare_exchange_strong(esperado, actual)) {
++    std::atexit([] { RexSwitchApmRestaurarCpu(); });
++  }
++  if (mhz <= 0) {
++    RexSwitchApmRestaurarCpu();
++    return;
++  }
++  // The rates pcv knows for the CPU (Erista and Mariko share these).
++  static constexpr u32 kTablaHz[] = {1020000000, 1224000000, 1428000000, 1581000000, 1785000000};
++  u32 hz = kTablaHz[0];
++  for (u32 t : kTablaHz) {
++    if (t <= u32(mhz) * 1000000u + kMargenCpuHz) hz = t;
++  }
++  /*
++   * sys-clk / Horizon OC first: with it running, a rate set through clkrst lasts until its next tick
++   * (~300 ms) and the two would fight every second. Its override is what its own overlay uses and
++   * nothing in its loop overrides that. Only without it is clkrst used, watched by RexSwitchApmVigilar.
++   */
++  if (rex::ui::switch_sysclk::PedirCpu(hz)) {
++    g_cpu_por_sysclk.store(true, std::memory_order_relaxed);
++    g_cpu_objetivo.store(0, std::memory_order_relaxed);
++    std::fprintf(stderr, "[apm] CPU: %.1f -> %.1f MHz pedidos al sysmodule de relojes\n", double(actual) / 1e6,
++                 double(hz) / 1e6);
++    return;
++  }
++  const bool ok = FijarCpu(hz);
++  g_cpu_objetivo.store(ok ? hz : 0, std::memory_order_relaxed);
++  u32 ahora = 0;
++  LeerCpu(ahora);
++  std::fprintf(stderr, "[apm] CPU: %.1f -> %.1f MHz pedidos (%s), lee %.1f MHz\n", double(actual) / 1e6,
++               double(hz) / 1e6, ok ? "aceptado" : "RECHAZADO", double(ahora) / 1e6);
++}
++
++extern "C" void RexSwitchApmRestaurarCpu(void) {
++  g_cpu_objetivo.store(0, std::memory_order_relaxed);
++  if (g_cpu_por_sysclk.exchange(false)) {
++    rex::ui::switch_sysclk::PedirCpu(0);  // the sysmodule puts its own rate back
++    return;
++  }
++  const u32 original = g_cpu_original.load(std::memory_order_relaxed);
++  if (original) FijarCpu(original);
++}
++
++/*
++ * Handheld GPU above Horizon's own profiles (condemned2-nx): 614.4, 691.2 or 768.0 MHz, the last being the
++ * console's docked rate. Only through a clock sysmodule's override (sys-clk / Horizon OC): apm has no handheld
++ * configuration above 460.8 MHz. Returns 1 if the sysmodule took it, 0 otherwise (then the caller stays on apm).
++ * Released at exit.
++ */
++extern "C" int RexSwitchApmPedirGpuOcMhz(int mhz) {
++  static constexpr u32 kTablaHz[] = {614400000, 691200000, 768000000};
++  u32 hz = 0;
++  for (u32 t : kTablaHz) {
++    if (mhz > 0 && t <= u32(mhz) * 1000000u + kMargenCpuHz) hz = t;
++  }
++  static std::atomic<bool> salida{false};
++  if (!hz) {
++    rex::ui::switch_sysclk::PedirGpu(0);
++    return 0;
++  }
++  if (!rex::ui::switch_sysclk::PedirGpu(hz)) {
++    std::fprintf(stderr, "[apm] GPU a %.1f MHz: no hay sysmodule de relojes que lo acepte; se queda en apm\n",
++                 double(hz) / 1e6);
++    return 0;
++  }
++  if (!salida.exchange(true)) {
++    std::atexit([] { rex::ui::switch_sysclk::PedirGpu(0); });
++  }
++  std::fprintf(stderr, "[apm] GPU a %.1f MHz pedidos al sysmodule de relojes\n", double(hz) / 1e6);
++  return 1;
++}
++
+ extern "C" void RexSwitchApmVigilar(void) {
++  VigilarCpu();
+   const u32 emc0 = g_emc_original.load(std::memory_order_relaxed);
+   if (emc0 == 0 || g_rendido_emc.load(std::memory_order_relaxed)) {
+     return;  // nothing changed, or we already know this firmware does not allow it
+@@ -350,6 +488,9 @@ extern "C" void RexSwitchApmVigilar(void) {
+ #else   // !REX_PLATFORM_SWITCH
+ extern "C" void RexSwitchApmPedirGpuMhz(int) {}
+ extern "C" void RexSwitchApmPermitirRam1600(int) {}
++extern "C" void RexSwitchApmPedirCpuMhz(int) {}
++extern "C" void RexSwitchApmRestaurarCpu(void) {}
++extern "C" int RexSwitchApmPedirGpuOcMhz(int) { return 0; }
+ extern "C" void RexSwitchApmAplicar(void) {}
+ extern "C" void RexSwitchApmVigilar(void) {}
+ #endif  // REX_PLATFORM_SWITCH
+diff --git a/src/ui/switch_sysclk.cpp b/src/ui/switch_sysclk.cpp
+index 6766c0b..5513ebd 100644
+--- a/src/ui/switch_sysclk.cpp
++++ b/src/ui/switch_sysclk.cpp
+@@ -50,6 +50,7 @@
+ #include <atomic>
+ #include <cstdio>
+ #include <cstring>
++#include <mutex>
+ 
+ /* This object is compiled separately (rexglue_switch_startup) and has no fmt: warnings go to stderr. */
+ 
+@@ -96,6 +97,15 @@ bool g_aplicado = false;             // we are forcing the clocks of a mode that
+ bool g_aplicado_sobremesa = false;   // and in which direction (true docked, false handheld)
+ bool g_puesto[kModulos] = {false, false, false};  // which modules WE have changed
+ std::atomic<int> g_habilitado{0};  // off by default: this raises the clocks, which must be requested explicitly
++/*
++ * Clocks requested by the game itself (condemned2-nx: its CPU and handheld GPU settings), independent of
++ * Reverse-NX. While a module has one, it belongs to it: Aplicar does not overwrite it with the profile column and
++ * Soltar does not release it. The profiler thread (SeguirModo) and the game (PedirModulo) both get here, hence the
++ * lock.
++ */
++uint32_t g_pedido_hz[kModulos] = {0, 0, 0};
++bool g_pedido_puesto[kModulos] = {false, false, false};
++std::mutex g_cerrojo;
+ 
+ Result PedirPerfiles(uint64_t tid, ListaPerfiles* salida) {
+   return serviceDispatchIn(&g_servicio, kOrdenPerfiles, tid,
+@@ -338,6 +348,11 @@ void Aplicar(bool a_sobremesa) {
+     Aviso("[relojes] no tienes nada puesto en esa columna: no se toca nada");
+     return;
+   }
++  for (unsigned m = 0; m < kModulos; ++m) {
++    if (g_pedido_puesto[m]) {
++      hz[m] = 0;  // the game's own request wins over the profile column
++    }
++  }
+   for (unsigned m = 0; m < kModulos; ++m) {
+     if (hz[m] && R_SUCCEEDED(PonerOverride(m, hz[m]))) {
+       g_puesto[m] = true;
+@@ -368,12 +383,20 @@ void Soltar() {
+ __attribute__((destructor)) void AlSalir() {
+   if (g_abierto) {
+     Soltar();
++    for (unsigned m = 0; m < kModulos; ++m) {
++      if (g_pedido_puesto[m]) {
++        PonerOverride(m, 0);
++        g_pedido_puesto[m] = false;
++      }
++    }
+   }
+ }
+ 
+ }  // namespace
+ 
+-void SeguirModo(bool sobremesa_efectivo, bool sobremesa_real) {
++namespace {
++
++void SeguirReverseNx(bool sobremesa_efectivo, bool sobremesa_real) {
+   // Both directions. Faking docked mode with the console in hand is not enough: the opposite case
+   // (console in the dock and Reverse-NX on "Fake Handheld") left everything untouched and the
+   // sysmodule kept the docked column, that is, GPU 768 MHz and memory 1600. It acts whenever the
+@@ -397,13 +420,88 @@ void SeguirModo(bool sobremesa_efectivo, bool sobremesa_real) {
+   }
+ }
+ 
++/*
++ * The game's GPU request is a handheld setting: with the console in the dock it is lifted and the sysmodule's
++ * docked column (768 MHz) rules; back in the hands it is set again. Also while Reverse-NX holds the GPU (it set the
++ * module itself).
++ */
++void SeguirGpuPedida(bool sobremesa_real) {
++  if (!g_abierto || !g_pedido_hz[1]) {
++    return;
++  }
++  const bool toca = !sobremesa_real && !g_puesto[1];
++  if (!toca && g_pedido_puesto[1]) {
++    if (!g_puesto[1]) {
++      PonerOverride(1, 0);
++    }
++    g_pedido_puesto[1] = false;
++    Aviso("[relojes] GPU pedida por el juego en pausa (consola en el dock o Reverse-NX)");
++  } else if (toca && !g_pedido_puesto[1] && R_SUCCEEDED(PonerOverride(1, g_pedido_hz[1]))) {
++    g_pedido_puesto[1] = true;
++    std::fprintf(stderr, "[relojes] GPU pedida por el juego otra vez a %u kHz\n", g_pedido_hz[1] / 1000u);
++  }
++}
++
++}  // namespace
++
++void SeguirModo(bool sobremesa_efectivo, bool sobremesa_real) {
++  std::lock_guard<std::mutex> cerrojo(g_cerrojo);
++  SeguirReverseNx(sobremesa_efectivo, sobremesa_real);
++  SeguirGpuPedida(sobremesa_real);
++}
++
+ void Habilitar(bool habilitado) {
++  std::lock_guard<std::mutex> cerrojo(g_cerrojo);
+   g_habilitado.store(habilitado ? 1 : 0, std::memory_order_relaxed);
+   if (!habilitado && g_aplicado) {
+     Soltar();
+   }
+ }
+ 
++static bool PedirModulo(unsigned modulo, uint32_t hz) {
++  static const char* const kNombre[kModulos] = {"CPU", "GPU", "memoria"};
++  if (modulo >= kModulos) {
++    return false;
++  }
++  std::lock_guard<std::mutex> cerrojo(g_cerrojo);
++  if (!Abrir()) {
++    return false;  // no clock sysmodule: the caller falls back to what it has
++  }
++  if (hz == 0) {
++    g_pedido_hz[modulo] = 0;
++    if (g_pedido_puesto[modulo]) {
++      PonerOverride(modulo, 0);
++      g_pedido_puesto[modulo] = false;
++      std::fprintf(stderr, "[relojes] %s soltada: la vuelve a poner el sysmodule\n", kNombre[modulo]);
++    }
++    return true;
++  }
++  if (modulo == 1 && appletGetOperationMode() == AppletOperationMode_Console) {
++    // A handheld setting asked for in the dock: kept for when the console leaves it (SeguirGpuPedida).
++    if (g_pedido_puesto[1]) {
++      PonerOverride(1, 0);
++      g_pedido_puesto[1] = false;
++    }
++    g_pedido_hz[1] = hz;
++    std::fprintf(stderr, "[relojes] GPU a %u kHz guardada: la consola esta en el dock\n", hz / 1000u);
++    return true;
++  }
++  const Result rc = PonerOverride(modulo, hz);
++  if (R_FAILED(rc)) {
++    std::fprintf(stderr, "[relojes] el sysmodule rechazo %s a %u kHz. Error 0x%X\n", kNombre[modulo], hz / 1000u,
++                 (unsigned)rc);
++    return false;
++  }
++  g_pedido_hz[modulo] = hz;
++  g_pedido_puesto[modulo] = true;
++  g_puesto[modulo] = false;  // no longer Reverse-NX's to release
++  std::fprintf(stderr, "[relojes] %s a %u kHz por override del sysmodule\n", kNombre[modulo], hz / 1000u);
++  return true;
++}
++
++bool PedirCpu(uint32_t hz) { return PedirModulo(0, hz); }
++bool PedirGpu(uint32_t hz) { return PedirModulo(1, hz); }
++
+ }  // namespace rex::ui::switch_sysclk
+ 
+ extern "C" void RexSwitchRelojesReverseHabilitar(int habilitado) {

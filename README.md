@@ -28,6 +28,8 @@ effects may need fixes once logs from the console come in. Installation guide (i
 | `D3DDevice_CreateVertexShader` / `CreatePixelShader` | `0x8265DF50` / `0x8265DE40` (`tools/find_shader_hooks.py`) |
 | setjmp / longjmp | `0x8281FC40` / `0x8281F920` |
 | Recompile hints | `recomp/condemned2_functions.toml` (2), `recomp/condemned2_leaf_functions.toml` (261 gap functions) |
+| Predicated tiling | 1280x720 as two 2X EDRAM tiles (window offset -608); colour and depth of the right tile resolve into the left tile's texture at +608 (`sdk-patches/0020`, `0028`) |
+| Options menu | ZL + ZR + Minus: CPU and handheld GPU clocks (sys-clk / Horizon OC override when present), film grain, depth of field, sharpen, FXAA, anisotropy, brightness, gamma |
 
 ## Layout
 

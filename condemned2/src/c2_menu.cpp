@@ -1,9 +1,14 @@
-// condemned - the port's graphics options menu (modelled on ds2-nx's ds2_menu.cpp).
+// condemned2-nx - the port's graphics options menu.
 //
 // ZL + ZR + Minus opens it over the game; the deko3d presenter paints it (sdk-patches/0012 and 0024: no ImGui, which
 // would move presentation to the UI thread) and while it is open the game sees the controller idle. Up / Down choose
-// the row, Left / Right change it (felt at once where the renderer can), A saves to c2_opciones.toml next to the NRO,
-// B closes. The GPU clock and the texture filtering are read when the game starts, so they apply at the next start.
+// the row, Left / Right change it (felt at once where it can be), A saves to c2_opciones.toml next to the NRO, B
+// closes. The GPU clock and the texture filtering are read when the game starts, so they apply at the next start; the
+// CPU clock applies at once.
+//
+// The effect rows are Condemned 2's own post-processing passes, switched off by zeroing their strength constant
+// (c2_gpu.cpp, ConstantesOpcion): film grain, depth of field and sharpen. The game's colour grading (bleach bypass,
+// desaturation) is its art direction and is left alone.
 
 #include "c2_menu.h"
 
@@ -25,17 +30,19 @@
 
 #if defined(__SWITCH__)
 #include <switch.h>
+#include <rex/ui/switch_apm.h>
 #endif
 
 REXCVAR_DEFINE_BOOL(c2_fxaa, false, "C2", "FXAA in the output pass (options menu)");
 REXCVAR_DEFINE_BOOL(c2_grano_pelicula, true, "C2", "The film grain of the composite pass (options menu)");
-REXCVAR_DEFINE_BOOL(c2_luz_volumetrica, true, "C2",
-                    "The volumetric light shafts (options menu). false = not drawn, a little less GPU");
+REXCVAR_DEFINE_BOOL(c2_profundidad_campo, true, "C2", "The depth of field blur (options menu)");
+REXCVAR_DEFINE_BOOL(c2_nitidez, true, "C2", "The game's sharpen pass (options menu)");
 REXCVAR_DEFINE_INT32(c2_brillo, 0, "C2", "Brightness in the output pass, -5 to +5 (options menu)").range(-5, 5);
 REXCVAR_DEFINE_INT32(c2_gamma, 100, "C2", "Gamma in the output pass in hundredths, 80 to 120 (options menu)")
     .range(80, 120);
 
 REXCVAR_DECLARE(int32_t, c2_gpu_portatil_mhz);        // c2_app.h
+REXCVAR_DECLARE(int32_t, c2_cpu_mhz);                 // c2_app.h
 REXCVAR_DECLARE(int32_t, nfsmw_nativo_anisotropico);   // sdk/src/x360/deko/texturas.cpp
 REXCVAR_DECLARE(double, input_vibracion_fuerza);        // sdk/src/input/switch/switch_input_driver.cpp
 REXCVAR_DECLARE(bool, switch_contador_fps);              // sdk/src/input/switch/switch_input_driver.cpp
@@ -81,13 +88,29 @@ size_t Cercano(const std::vector<double>& opciones, double v) {
 std::vector<Fila>& Filas() {
   static std::vector<Fila> filas = [] {
     std::vector<Fila> f;
-    // The handheld GPU clock through Horizon's own profiles (not an overclock). Docked is always 768 MHz.
-    f.push_back({"GPU (HANDHELD)", "c2_gpu_portatil_mhz", {"307 MHZ", "384 MHZ", "460 MHZ"}, {"0", "384", "460"},
-                 [] { return Cercano({0, 384, 460}, REXCVAR_GET(c2_gpu_portatil_mhz)); },
+    // The handheld GPU clock: up to 460 MHz through Horizon's own profiles (not an overclock); 614 and 768 MHz (the
+    // docked rate) only with sys-clk / Horizon OC installed. Docked is always 768 MHz.
+    f.push_back({"GPU (HANDHELD)", "c2_gpu_portatil_mhz",
+                 {"307 MHZ", "384 MHZ", "460 MHZ", "614 MHZ (SYS-CLK)", "768 MHZ (SYS-CLK)"},
+                 {"0", "384", "460", "614", "768"},
+                 [] { return Cercano({0, 384, 460, 614, 768}, REXCVAR_GET(c2_gpu_portatil_mhz)); },
                  [](size_t i) {
-                   static constexpr int32_t kMhz[] = {0, 384, 460};
+                   static constexpr int32_t kMhz[] = {0, 384, 460, 614, 768};
                    REXCVAR_SET(c2_gpu_portatil_mhz, kMhz[i]);
                  }, true});
+    // The CPU clock: the game is CPU-bound on the Switch (its main thread uses a whole core), so this is where the frame
+    // rate comes from. Applied at once (sys-clk / Horizon OC override when present, clkrst otherwise).
+    f.push_back({"CPU", "c2_cpu_mhz", {"STOCK", "1224 MHZ", "1428 MHZ", "1581 MHZ", "1785 MHZ"},
+                 {"0", "1224", "1428", "1581", "1785"},
+                 [] { return Cercano({0, 1224, 1428, 1581, 1785}, REXCVAR_GET(c2_cpu_mhz)); },
+                 [](size_t i) {
+                   static constexpr int32_t kMhz[] = {0, 1224, 1428, 1581, 1785};
+                   REXCVAR_SET(c2_cpu_mhz, kMhz[i]);
+#if defined(__SWITCH__)
+                   RexSwitchApmPedirCpuMhz(kMhz[i]);
+#endif
+                 },
+                 false});
     f.push_back({"TEXTURE FILTERING", "nfsmw_nativo_anisotropico", {"TRILINEAR", "2x", "4x", "8x", "16x"},
                  {"0", "2", "4", "8", "16"},
                  [] { return Cercano({0, 2, 4, 8, 16}, REXCVAR_GET(nfsmw_nativo_anisotropico)); },
@@ -98,9 +121,12 @@ std::vector<Fila>& Filas() {
     f.push_back({"FILM GRAIN", "c2_grano_pelicula", {"OFF", "ON"}, {"false", "true"},
                  [] { return size_t(REXCVAR_GET(c2_grano_pelicula)); },
                  [](size_t i) { REXCVAR_SET(c2_grano_pelicula, i == 1); }, false});
-    f.push_back({"VOLUMETRIC LIGHT", "c2_luz_volumetrica", {"OFF", "ON"}, {"false", "true"},
-                 [] { return size_t(REXCVAR_GET(c2_luz_volumetrica)); },
-                 [](size_t i) { REXCVAR_SET(c2_luz_volumetrica, i == 1); }, false});
+    f.push_back({"DEPTH OF FIELD", "c2_profundidad_campo", {"OFF", "ON"}, {"false", "true"},
+                 [] { return size_t(REXCVAR_GET(c2_profundidad_campo)); },
+                 [](size_t i) { REXCVAR_SET(c2_profundidad_campo, i == 1); }, false});
+    f.push_back({"SHARPEN", "c2_nitidez", {"OFF", "ON"}, {"false", "true"},
+                 [] { return size_t(REXCVAR_GET(c2_nitidez)); },
+                 [](size_t i) { REXCVAR_SET(c2_nitidez, i == 1); }, false});
     {
       Fila b{"BRIGHTNESS", "c2_brillo", {}, {}, [] { return size_t(REXCVAR_GET(c2_brillo) + 5); },
              [](size_t i) { REXCVAR_SET(c2_brillo, int32_t(i) - 5); }, false};
@@ -159,7 +185,7 @@ std::string Relleno(std::string s, size_t ancho) {
 void Pintar(const Estado& e) {
   const auto& filas = Filas();
   std::vector<std::string> lineas;
-  lineas.push_back("\x02" "CONDEMNED: CRIMINAL ORIGINS - SETTINGS");
+  lineas.push_back("\x02" "CONDEMNED 2: BLOODSHOT - SETTINGS");
   lineas.push_back("");
   for (size_t i = 0; i < filas.size(); ++i) {
     const Fila& f = filas[i];
@@ -170,6 +196,7 @@ void Pintar(const Estado& e) {
   }
   lineas.push_back("");
   lineas.push_back("\x03" " ! APPLIES AT THE NEXT START. DOCKED GPU: 768 MHZ");
+  lineas.push_back("\x03" " SYS-CLK: NEEDS SYS-CLK OR HORIZON OC, ELSE 460 MHZ");
   lineas.push_back("\x03" " UP/DOWN: ROW  LEFT/RIGHT: CHANGE  A: SAVE  B: CLOSE");
   if (!e.aviso.empty()) lineas.push_back("\x02 " + e.aviso);
   rex::ui::FijarSuperposicion(std::move(lineas));
@@ -258,11 +285,12 @@ void CargarOpciones() {
   std::error_code ec;
   if (!std::filesystem::exists(Fichero(), ec)) return;
   rex::cvar::LoadConfig(Fichero());
-  REXLOG_INFO("c2: opciones de {} (GPU portatil {} MHz, anisotropico {}, FXAA {}, grano {}, luz volumetrica {}, "
-              "brillo {}, gamma {})",
-              Fichero().string(), REXCVAR_GET(c2_gpu_portatil_mhz), REXCVAR_GET(nfsmw_nativo_anisotropico),
-              REXCVAR_GET(c2_fxaa), REXCVAR_GET(c2_grano_pelicula), REXCVAR_GET(c2_luz_volumetrica),
-              REXCVAR_GET(c2_brillo), REXCVAR_GET(c2_gamma));
+  REXLOG_INFO("c2: opciones de {} (CPU {} MHz, GPU portatil {} MHz, anisotropico {}, FXAA {}, grano {}, "
+              "profundidad de campo {}, nitidez {}, brillo {}, gamma {})",
+              Fichero().string(), REXCVAR_GET(c2_cpu_mhz), REXCVAR_GET(c2_gpu_portatil_mhz),
+              REXCVAR_GET(nfsmw_nativo_anisotropico), REXCVAR_GET(c2_fxaa), REXCVAR_GET(c2_grano_pelicula),
+              REXCVAR_GET(c2_profundidad_campo), REXCVAR_GET(c2_nitidez), REXCVAR_GET(c2_brillo),
+              REXCVAR_GET(c2_gamma));
 }
 
 void Instalar() {

@@ -1,0 +1,136 @@
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index 3920521..71ce7dc 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -295,7 +295,14 @@ class RenderDk final : public DestinosNativos {
+     uint32_t formato_guest = 0;
+     bool escrita = false;
+     uint64_t uso = 0;  // uso_resueltas_ when last resolved or sampled: the least recent size goes first
++    uint64_t fotograma_escrita = 0;  // fotograma_ of its last resolve (BaseDeMosaico)
+   };
++  // Predicated tiling: a resolve whose base lies inside a texture already resolved with the same pitch, height and
++  // guest format is that texture at the tile's position. Moves base to it and adds the offset to dx/dy. Colour and
++  // depth (Condemned 2 resolves its scene depth per tile as well, and the right tile's half went to a texture of its
++  // own: the post-processing read "far" there and the right half of the screen came out darker).
++  bool BaseDeMosaico(uint32_t& base, uint32_t formato_guest, uint32_t bpp, uint32_t pitch, uint32_t alto, uint32_t& dx,
++                     uint32_t& dy);
+   // The frame dump (PedirVolcado): from one Swap to the next, each resolved texture written is copied to a read-back
+   // block; at the next Swap the GPU is waited for and they are written as BMPs (destinos.cpp, TerminarVolcado).
+   struct EntradaVolcado {
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index 3566dbe..bbeb454 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -1058,6 +1058,37 @@ const ImagenDk* RenderDk::TexturaResuelta(uint32_t direccion, uint32_t ancho, ui
+ 
+ // ---- Copies (resolve and clear)
+ 
++bool RenderDk::BaseDeMosaico(uint32_t& base, uint32_t formato_guest, uint32_t bpp, uint32_t pitch, uint32_t alto,
++                             uint32_t& dx, uint32_t& dy) {
++  if (!bpp || pitch < 32 || (pitch & 31)) {
++    return false;
++  }
++  const uint32_t b = base & 0x1FFFFFFF;
++  // A texture of its own at the tile's address blocks this only while it is alive: one resolved in this frame or the
++  // last. An older one is a leftover (another level, the menus, or a build that resolved the tile there) and must not
++  // keep the tile out of its texture for the rest of the session.
++  const auto propia = resueltas_.find(b);
++  const bool propia_viva = propia != resueltas_.end() && propia->second.fotograma_escrita + 1 >= fotograma_;
++  const uint32_t bytes_tile = 32 * 32 * bpp, por_fila = pitch / 32;
++  const uint32_t filas = (alto + 31) / 32;
++  for (const auto& [tb, r] : resueltas_) {
++    if (tb >= b || r.formato_guest != formato_guest || r.imagen.ancho != pitch || r.imagen.alto != alto) {
++      continue;
++    }
++    const uint32_t delta = b - tb;
++    if (delta % bytes_tile || delta / bytes_tile >= por_fila * filas) continue;
++    // With a live texture of its own at b, only a texture resolved in this very frame wins (the tile 0 resolve that
++    // comes right before).
++    if (propia != resueltas_.end() && (propia_viva || r.fotograma_escrita != fotograma_)) continue;
++    const uint32_t indice = delta / bytes_tile;
++    dx += (indice % por_fila) * 32;
++    dy += (indice / por_fila) * 32;
++    base = tb;
++    return true;
++  }
++  return false;
++}
++
+ bool RenderDk::Rechazar(uint32_t causa, const char* texto) {
+   ++rechazados_;
+   ++causas_[causa];
+@@ -1209,22 +1240,10 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+           case 32: case 37: bpp = 8; break;                                           // 16_16_16_16_FLOAT, 32_32_FLOAT
+           default: break;
+         }
+-        const uint32_t b = base & 0x1FFFFFFF;
+-        if (bpp && pitch_destino >= 32 && !(pitch_destino & 31) && !resueltas_.count(b)) {
+-          const uint32_t bytes_tile = 32 * 32 * bpp, por_fila = pitch_destino / 32;
+-          const uint32_t filas = (alto_destino + 31) / 32;
+-          for (const auto& [tb, r] : resueltas_) {
+-            if (tb >= b || r.formato_guest != formato_destino || r.imagen.ancho != pitch_destino ||
+-                r.imagen.alto != alto_destino) {
+-              continue;
+-            }
+-            const uint32_t delta = b - tb;
+-            if (delta % bytes_tile || delta / bytes_tile >= por_fila * filas) continue;
+-            const uint32_t indice = delta / bytes_tile;
+-            dx += (indice % por_fila) * 32;
+-            dy += (indice / por_fila) * 32;
+-            base = (base & ~0x1FFFFFFFu) | tb;
+-            break;
++        if (bpp) {
++          uint32_t b = base & 0x1FFFFFFF;
++          if (BaseDeMosaico(b, formato_destino, bpp, pitch_destino, alto_destino, dx, dy)) {
++            base = (base & ~0x1FFFFFFFu) | b;
+           }
+         }
+       }
+@@ -1274,6 +1293,7 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+         frontal_ = {true, base_resuelta, destino_render, resuelta, ancho, alto};
+         frontal_obsoleta_ = 0;
+         resuelta->escrita = true;
++        resuelta->fotograma_escrita = fotograma_;
+         ++resuelta->imagen.version;
+         SombraMinimoResueltaEscrita(base_resuelta);
+         ++frontales_ahorrados_;
+@@ -1297,6 +1317,7 @@ bool RenderDk::Copiar(const RegistrosCopia& reg) {
+           }
+         }
+         resuelta->escrita = true;
++        resuelta->fotograma_escrita = fotograma_;
+         ++resuelta->imagen.version;
+         SombraMinimoResueltaEscrita(base_resuelta);
+         ++copias_;
+@@ -1634,10 +1655,12 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+   const uint32_t pitch_destino = reg.rb_copy_dest_pitch & 0x3FFF;
+   const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
+   // At its own position in the texture at the copy's base, as for color (Copiar).
+-  const uint32_t base = reg.rb_copy_dest_base & 0x1FFFFFFF;
+-  const uint32_t dx = uint32_t(x0);
+-  const uint32_t dy = uint32_t(y0);
++  uint32_t base = reg.rb_copy_dest_base & 0x1FFFFFFF;
++  uint32_t dx = uint32_t(x0);
++  uint32_t dy = uint32_t(y0);
+   const uint32_t formato_textura = ((info >> 16) & 0x1) ? 23 : 22;  // k_24_8_FLOAT : k_24_8
++  // Predicated tiling, as for colour: the right tile's depth goes into the left tile's texture at its position.
++  BaseDeMosaico(base, formato_textura, 4, pitch_destino, alto_destino, dx, dy);
+   // Its width as for color (the pitch is padded to 32 texels; see Copiar).
+   const uint32_t ancho_resolve = uint32_t(x1 - x0);
+   const uint32_t ancho_textura = AnchoResuelta(base, x0, ancho_resolve, pitch_destino, alto_destino);
+@@ -1674,6 +1697,7 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+     profundidad->contenido_invalido = true;  // its content is in the texture now
+     profundidad->resuelta_base = base;
+     resuelta->escrita = true;
++    resuelta->fotograma_escrita = fotograma_;
+     ++resuelta->imagen.version;
+     SombraMinimoResueltaEscrita(base);
+     SombraMinimoTrasIntercambio(*profundidad, base, borrara);
+@@ -1691,6 +1715,7 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+     dkCmdBufCopyImage(nucleo_.comandos(), &origen_vista, &a, &destino_vista, &b, 0);
+   }
+   resuelta->escrita = true;
++  resuelta->fotograma_escrita = fotograma_;
+   ++resuelta->imagen.version;
+   SombraMinimoResueltaEscrita(base);
+   ++copias_;

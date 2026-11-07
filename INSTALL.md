@@ -102,9 +102,35 @@ Log ada di `sdmc:/switch/condemned2-nx/logs/`. Baris yang perlu diperhatikan:
 - `Call to invalid or unregistered function at guest address 0x...` berarti ada fungsi yang belum dikenali
   codegen. Tambahkan alamatnya ke `recomp/condemned2_functions.toml`, lalu ulangi langkah 2 dan 3.
 
+## Menu opsi grafis
+
+Tekan **ZL + ZR + Minus** saat bermain. Atas/Bawah memilih baris, Kiri/Kanan mengubah nilai, A menyimpan ke
+`c2_opciones.toml` di samping NRO, B menutup menu. Baris bertanda `!` baru berlaku setelah game dijalankan ulang.
+
+| Baris | Isi |
+|---|---|
+| CPU | STOCK, 1224, 1428, 1581, 1785 MHz (bawaan 1785, laju boost resmi konsol). Langsung berlaku. |
+| GPU (HANDHELD) | 307, 384, 460 MHz lewat profil Horizon; 614 dan 768 MHz lewat sys-clk / Horizon OC (bawaan 768). Tanpa sysmodule tersebut tetap 460 MHz. Di dock selalu 768 MHz. |
+| TEXTURE FILTERING | Trilinear sampai 16x anisotropik. |
+| ANTI-ALIASING | Mati atau FXAA. |
+| FILM GRAIN | Butiran film dari pass komposit game. |
+| DEPTH OF FIELD | Blur kedalaman bidang dari game. |
+| SHARPEN | Pass penajaman dari game. |
+| BRIGHTNESS, GAMMA | Koreksi di pass keluaran. |
+| VIBRATION, FPS COUNTER | Getaran dan penghitung FPS. |
+
+Efek FILM GRAIN, DEPTH OF FIELD, dan SHARPEN dimatikan dengan menolkan konstanta kekuatannya di shader game
+sendiri (dicari per shader dari tabel konstantanya), sehingga pass lain tidak tersentuh.
+
+Catatan clock: saat bermain di tangan, game ini dibatasi GPU (GPU sibuk sekitar 95% tiap frame pada 460 MHz). Karena
+itu GPU 768 MHz adalah pengaturan yang paling menaikkan FPS tanpa menurunkan kualitas gambar, dengan konsekuensi baterai
+lebih cepat habis dan konsol lebih hangat. Bila sys-clk / Horizon OC terpasang, permintaan CPU dan GPU dikirim lewat
+override sysmodule itu dan dilepas saat game ditutup normal. Bila game tertutup paksa, override bisa tertinggal sampai
+diubah dari overlay atau konsol dinyalakan ulang.
+
 ## Status dan batasan
 
-Belum diuji di konsol. Konfigurasi rekompilasi bersih (nol error) dan hook shader sudah diverifikasi dari kode
-mesin, tetapi renderer `src/c2_gpu.cpp` masih berasal dari port Condemned 1. Condemned 2 memakai versi LithTech
-yang lebih baru (efek pasca-proses, format render target), jadi kemungkinan ada efek yang salah tampil dan perlu
-penyesuaian berdasarkan log dari konsol.
+Dunia 3D, video Bink, dan langit sudah tampil benar di konsol. Bug terakhir yang diketahui (separuh kanan layar lebih
+gelap saat bermain) berasal dari resolve depth tile kanan pada predicated tiling dan diperbaiki oleh
+`sdk-patches/0028`. Laporkan bila masih ada efek yang salah tampil, sertakan log serta hasil ZL+ZR+Kiri (dump frame) dan
+ZL+ZR+Bawah (tangkapan layar) dengan `switch_atajos_depuracion = true` di `c2.toml`.

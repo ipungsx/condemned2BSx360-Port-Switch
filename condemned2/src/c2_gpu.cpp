@@ -63,6 +63,7 @@
 #include <unordered_set>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <filesystem>
 
 #include <rex/cvar.h>
@@ -82,7 +83,8 @@
 #include <xxhash.h>
 
 REXCVAR_DECLARE(bool, c2_grano_pelicula);      // c2_menu.cpp
-REXCVAR_DECLARE(bool, c2_luz_volumetrica);     // c2_menu.cpp
+REXCVAR_DECLARE(bool, c2_profundidad_campo);   // c2_menu.cpp
+REXCVAR_DECLARE(bool, c2_nitidez);             // c2_menu.cpp
 REXCVAR_DECLARE(bool, switch_captura_pedida);  // ZL + ZR + Down (sdk/src/input/switch/switch_input_driver.cpp)
 REXCVAR_DECLARE(bool, switch_volcado_pedido);  // ZL + ZR + Left: every resolved texture of the next frame
 REXCVAR_DECLARE(bool, switch_omitir_pedido);   // ZL + ZR + Right: next draw-skipping mode (SkipMode)
@@ -1370,23 +1372,27 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     request.generacion_constantes_ps = generacion_constantes_ps_;
     request.generacion_fetch = generacion_fetch_;
     request.generacion_encuadre = generacion_encuadre_;
-    // The options menu (c2_menu.cpp): the volumetric light shafts left out, the film grain's strength at 0.
-    const uint8_t opcion = ps_ ? ClaseOpcion(ps_) : 0;
-    if (opcion == kOpcionLuzVolumetrica && !REXCVAR_GET(c2_luz_volumetrica)) {
-      ++skipped_by_mode_;
-      return;
-    }
-    std::array<uint32_t, 4> grano{};
-    const bool sin_grano = opcion == kOpcionGrano && !REXCVAR_GET(c2_grano_pelicula);
-    if (sin_grano) {
-      std::memcpy(grano.data(), &registers_[kRegGrano], sizeof(grano));
-      std::fill_n(&registers_[kRegGrano], 4, 0u);
-      request.generacion_constantes_ps = ++generacion_constantes_ps_;
+    // The options menu (c2_menu.cpp): an effect turned off has its strength constant at 0 for this draw only. The
+    // pass still draws (it is the copy of the scene to the next target), it just leaves the image as it is.
+    std::array<std::array<uint32_t, 4>, kMaxConstantesOpcion> guardadas;
+    std::array<uint32_t, kMaxConstantesOpcion> registros_guardados;
+    size_t apagadas = 0;
+    if (ps_) {
+      for (const ConstanteOpcion& c : ConstantesOpcion(ps_)) {
+        if (apagadas >= kMaxConstantesOpcion || !OpcionApagada(c.opcion)) continue;
+        const uint32_t r = kRegConstantesPs + uint32_t(c.registro) * 4;
+        std::memcpy(guardadas[apagadas].data(), &registers_[r], sizeof(guardadas[apagadas]));
+        std::fill_n(&registers_[r], 4, 0u);
+        registros_guardados[apagadas++] = r;
+      }
+      if (apagadas) request.generacion_constantes_ps = ++generacion_constantes_ps_;
     }
     ++enviados_;
     const bool drawn = destinos_->Dibujar(request);
-    if (sin_grano) {
-      std::memcpy(&registers_[kRegGrano], grano.data(), sizeof(grano));
+    if (apagadas) {
+      for (size_t i = 0; i < apagadas; ++i) {
+        std::memcpy(&registers_[registros_guardados[i]], guardadas[i].data(), sizeof(guardadas[i]));
+      }
       ++generacion_constantes_ps_;
     }
     if (draw_tracing_) DrawTraceLine(drawn);
@@ -1814,26 +1820,70 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   }
 
   // One line per draw of a traced light frame: what it draws with and what became of it.
-  // Which options-menu setting a pixel shader belongs to, by the constant and sampler names in its container:
-  // the composite pass (FilmGrain, PS constant c1 = 0x4404) and the volumetric light's slices and box.
-  static constexpr uint8_t kOpcionGrano = 1, kOpcionLuzVolumetrica = 2;
-  static constexpr uint32_t kRegGrano = 0x4404;
-  std::unordered_map<const void*, uint8_t> clase_opcion_;
-  uint8_t ClaseOpcion(const rex::x360::EntradaShader* ps) {
-    const auto it = clase_opcion_.find(ps);
-    if (it != clase_opcion_.end()) return it->second;
-    uint8_t clase = 0;
+  // The options-menu settings that are a pixel shader constant, found by name in each shader's own constant table
+  // (D3DXSHADER_CONSTANTTABLE) because the register changes between shaders: k_fFilmGrain is c226 in the composite
+  // pass that also does the bleach bypass and c219 in the grain-only pass. Zeroing each removes the effect:
+  //   film grain     oC0 = noise * k_fFilmGrain + colour
+  //   depth of field the 9 taps are spread by k_fDepthOfField (far) or k_fDepthOfField_Near (near): all on the pixel
+  //   sharpen        oC0 = (4 * colour - 4 neighbours) * k_fSharpen + colour
+  static constexpr uint32_t kRegConstantesPs = 0x4400;  // PS c0: the second half of the 512 float constants
+  static constexpr size_t kMaxConstantesOpcion = 4;
+  enum : uint8_t { kOpGrano = 0, kOpProfundidad = 1, kOpNitidez = 2 };
+  struct ConstanteOpcion {
+    uint8_t opcion;
+    uint16_t registro;
+  };
+  static bool OpcionApagada(uint8_t opcion) {
+    switch (opcion) {
+      case kOpGrano: return !REXCVAR_GET(c2_grano_pelicula);
+      case kOpProfundidad: return !REXCVAR_GET(c2_profundidad_campo);
+      case kOpNitidez: return !REXCVAR_GET(c2_nitidez);
+      default: return false;
+    }
+  }
+  static uint32_t Be32(const uint8_t* p) {
+    return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | uint32_t(p[3]);
+  }
+  static std::vector<ConstanteOpcion> LeerConstantesOpcion(const std::vector<uint8_t>& c) {
+    std::vector<ConstanteOpcion> v;
+    if (c.size() < 36) return v;
+    const uint32_t tabla = Be32(c.data() + 16) + 4;  // the container's offset, past the table's own size word
+    if (uint64_t(tabla) + 24 > c.size()) return v;
+    const uint32_t n = Be32(c.data() + tabla + 12), info = Be32(c.data() + tabla + 16);
+    for (uint32_t i = 0; i < n && i < 512; ++i) {
+      const uint64_t o = uint64_t(tabla) + info + uint64_t(i) * 20;
+      if (o + 20 > c.size()) break;
+      const uint64_t nombre = uint64_t(tabla) + Be32(c.data() + o);
+      const uint32_t conjunto = uint32_t(c[o + 4]) << 8 | c[o + 5];  // D3DXRS_FLOAT4 = 2
+      const uint32_t registro = uint32_t(c[o + 6]) << 8 | c[o + 7];
+      if (conjunto != 2 || registro > 255 || nombre >= c.size()) continue;
+      const char* texto = reinterpret_cast<const char*>(c.data() + nombre);
+      const std::string_view s(texto, strnlen(texto, c.size() - size_t(nombre)));
+      uint8_t opcion = 0xFF;
+      if (s == "k_fFilmGrain") {
+        opcion = kOpGrano;
+      } else if (s == "k_fDepthOfField" || s == "k_fDepthOfField_Near") {
+        opcion = kOpProfundidad;
+      } else if (s == "k_fSharpen") {
+        opcion = kOpNitidez;
+      }
+      if (opcion != 0xFF && v.size() < kMaxConstantesOpcion) v.push_back({opcion, uint16_t(registro)});
+    }
+    return v;
+  }
+  std::unordered_map<const void*, std::vector<ConstanteOpcion>> constantes_opcion_;
+  const std::vector<ConstanteOpcion>& ConstantesOpcion(const rex::x360::EntradaShader* ps) {
+    const auto it = constantes_opcion_.find(ps);
+    if (it != constantes_opcion_.end()) return it->second;
+    std::vector<ConstanteOpcion> v;
     if (const auto* juego = static_cast<const ds::Shader*>(ps->juego)) {
-      const std::string_view texto(reinterpret_cast<const char*>(juego->original.data()), juego->original.size());
-      if (texto.find("FilmGrain") != std::string_view::npos) {
-        clase = kOpcionGrano;
-      } else if (texto.find("sSliceMapSampler") != std::string_view::npos ||
-                 texto.find("sVLDepthMapSampler") != std::string_view::npos) {
-        clase = kOpcionLuzVolumetrica;
+      v = LeerConstantesOpcion(juego->normalizado.empty() ? juego->original : juego->normalizado);
+      for (const ConstanteOpcion& c : v) {
+        REXLOG_INFO("[gpu] menu de opciones: PS {:016X} c{} = {}", juego->huella, c.registro,
+                    c.opcion == kOpGrano ? "grano" : c.opcion == kOpProfundidad ? "profundidad de campo" : "nitidez");
       }
     }
-    clase_opcion_.emplace(ps, clase);
-    return clase;
+    return constantes_opcion_.emplace(ps, std::move(v)).first->second;
   }
 
   // c2_sonda_ps: what a spot light draw is given (Condemned's lights fill a square; the projector texture, the light

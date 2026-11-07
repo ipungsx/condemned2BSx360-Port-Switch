@@ -36,11 +36,23 @@
 #include <rex/ui/switch_apm.h>
 #endif
 
-// Handheld GPU clock through Horizon's own performance profiles (not an overclock), as ds2-nx and ds3-nx do.
-REXCVAR_DEFINE_INT32(c2_gpu_portatil_mhz, 460, "C2",
-                     "GPU in handheld mode through Horizon's performance profiles: 460 or 384 MHz; 0 = leave it "
-                     "(307.2 MHz stock)")
-    .range(0, 460);
+// Handheld GPU clock. Up to 460 MHz through Horizon's own performance profiles (not an overclock), as ds2-nx and
+// ds3-nx do. 614 and 768 MHz (the console's docked rate) only through a clock sysmodule's override (sys-clk /
+// Horizon OC); without one the game stays at 460. The game is GPU-bound in handheld (the GPU busy ~95 % of each
+// frame at 460 MHz), so this is the setting that moves the frame rate without touching the image. Default 768: with
+// a clock sysmodule the docked rate in the hands too (more battery and heat), without one simply 460.
+REXCVAR_DEFINE_INT32(c2_gpu_portatil_mhz, 768, "C2",
+                     "GPU in handheld mode: 384 or 460 MHz through Horizon's performance profiles, 614 or 768 MHz "
+                     "through sys-clk / Horizon OC when installed; 0 = leave it (307.2 MHz stock)")
+    .range(0, 768);
+
+// CPU clock for the session. The game is CPU-bound (its main thread fills a core at Horizon's default 1020 MHz in
+// handheld); 1785 MHz is the console's own boost rate, the one commercial games use while loading, available on Erista
+// and Mariko alike. Asked of sys-clk / Horizon OC when one is running (its override), set through clkrst otherwise,
+// and given back at exit. 0 = leave the clock alone.
+REXCVAR_DEFINE_INT32(c2_cpu_mhz, 1785, "C2",
+                     "CPU clock while the game runs: 1224, 1428, 1581 or 1785 MHz; 0 = leave it (options menu)")
+    .range(0, 1785);
 
 REXCVAR_DEFINE_STRING(c2_game_dir, "", "C2", "Extracted disc folder. Empty: game/ next to the executable.");
 
@@ -105,8 +117,14 @@ class C2App : public rex::ReXApp {
     c2::menu::Instalar();
 #if defined(__SWITCH__)
     if (const int32_t mhz = REXCVAR_GET(c2_gpu_portatil_mhz); mhz > 0) {
-      RexSwitchApmPedirGpuMhz(mhz);
-      RexSwitchApmAplicar();
+      // Above 460 MHz only a clock sysmodule can; without one (or if it refuses) Horizon's 460 profile is used.
+      if (mhz <= 460 || !RexSwitchApmPedirGpuOcMhz(mhz)) {
+        RexSwitchApmPedirGpuMhz(mhz > 460 ? 460 : mhz);
+        RexSwitchApmAplicar();
+      }
+    }
+    if (const int32_t mhz = REXCVAR_GET(c2_cpu_mhz); mhz > 0) {
+      RexSwitchApmPedirCpuMhz(mhz);
     }
 #endif
   }
